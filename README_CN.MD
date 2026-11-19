@@ -4,6 +4,8 @@
 
 **一个支持自托管的 AI 图像工作台。**
 
+[English](README.MD) · **简体中文**
+
 ![Version](https://img.shields.io/badge/version-0.1.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
