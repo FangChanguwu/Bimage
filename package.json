@@ -1,0 +1,16 @@
+{
+  "name": "bimage-panel",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "npm --prefix backend run build && npm --prefix frontend run build",
+    "test": "node --test test/*.test.js",
+    "test:backend": "npm --prefix backend test",
+    "typecheck": "npm --prefix backend run typecheck && npm --prefix frontend run typecheck"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.56.0",
+    "fflate": "^0.8.3"
+  }
+}

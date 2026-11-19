@@ -1,0 +1,368 @@
+import { chromium, expect } from '@playwright/test';
+import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import path from 'node:path';
+import { tmpdir } from 'node:os';
+import { createApp } from '../backend/dist/app.js';
+import { serveFrontend } from './frontend-server.js';
+
+// Only a fresh scratch database and loopback upstream are used. No production env,
+// credentials, provider or Docker process is read or changed by this test.
+const evidence = path.resolve(process.env.BIMAGE_UI_EVIDENCE || '.impeccable/review');
+mkdirSync(evidence, { recursive: true });
+const scratch = mkdtempSync(path.join(tmpdir(), 'bimage-integration-'));
+const adminKey = 'integration-admin-fixture-only';
+let png, calls = [], rewrites = [], modelCalls = 0, active = 0, maxActive = 0;
+const mock = createServer(async (q, r) => {
+  let raw = '';
+  for await (const part of q) raw += part;
+  r.setHeader('content-type', 'application/json');
+  if (q.url === '/v1/models') {
+    modelCalls++;
+    return r.end(JSON.stringify({ data: [{ id: 'gpt-image-1' }, { id: 'gpt-4.1' }, { id: 'unknown-model' }] }));
+  }
+  if (q.url === '/v1/chat/completions') {
+    const payload = JSON.parse(raw);
+    assert.equal(payload.model, 'gpt-4.1');
+    rewrites.push(payload.messages[1].content);
+    return r.end(JSON.stringify({ choices: [{ message: { content: '优化后的测试提示词\n保留换行' } }] }));
+  }
+  if (!['/v1/images/generations', '/v1/images/edits'].includes(q.url)) {
+    r.statusCode = 404;
+    return r.end(JSON.stringify({ error: 'Unexpected mock endpoint' }));
+  }
+  calls.push({ url: q.url, type: q.headers['content-type'], raw });
+  active++;
+  maxActive = Math.max(maxActive, active);
+  await new Promise(resolve => setTimeout(resolve, 120));
+  active--;
+  r.end(JSON.stringify({ data: [{ b64_json: png }] }));
+});
+await new Promise(resolve => mock.listen(0, '127.0.0.1', resolve));
+const service = await createApp({ dir: scratch, adminKey, concurrency: 1 });
+const apiServer = service.app.listen(0, '127.0.0.1');
+await new Promise(resolve => apiServer.once('listening', resolve));
+const front = await serveFrontend(apiServer);
+const base = `http://127.0.0.1:${front.address().port}`;
+const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
+const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, acceptDownloads: true });
+const page = await context.newPage();
+page.setDefaultTimeout(8000);
+const errors = [], network = [], assets = new Map(), passes = [];
+page.on('pageerror', e => errors.push(e.message));
+page.on('response', response => {
+  const url = new URL(response.url());
+  if (url.pathname.startsWith('/api')) network.push({ method: response.request().method(), path: url.pathname, status: response.status() });
+});
+page.on('request', request => {
+  const pathname = new URL(request.url()).pathname;
+  if (request.method() === 'GET' && pathname.startsWith('/api/assets/')) assets.set(pathname, (assets.get(pathname) || 0) + 1);
+});
+await context.route('**/*', route => {
+  const url = route.request().url();
+  if (url.startsWith(base + '/') || url.startsWith('blob:') || url.startsWith('data:')) return route.continue();
+  errors.push('Blocked non-local browser request: ' + url);
+  return route.abort();
+});
+const pass = name => { passes.push(name); console.log('PASS ' + name); };
+const shot = name => page.screenshot({ path: path.join(evidence, 'integration-' + name + '.png'), animations: 'disabled', fullPage: true });
+const api = (pathname) => page.evaluate(async pathname => {
+  const r = await fetch('/api' + pathname);
+  return { status: r.status, body: await r.json() };
+}, pathname);
+async function login(key) {
+  await page.getByRole('textbox', { name: '访问密钥' }).fill(key);
+  await page.getByRole('button', { name: '进入', exact: true }).click();
+  await expect(page.getByRole('button', { name: '设置', exact: true })).toBeVisible();
+  await expect(page.getByLabel('载入工作台')).toHaveCount(0);
+}
+async function settings(tab) {
+  await page.getByRole('button', { name: '设置', exact: true }).click();
+  if (tab) await page.getByRole('tab', { name: tab, exact: true }).click();
+}
+const studio = () => page.getByRole('button', { name: '图像工作台', exact: true }).click();
+async function pick(label, model) {
+  const select = page.getByRole('combobox', { name: label, exact: true });
+  await select.click();
+  await page.getByRole('option').filter({ hasText: model }).first().click();
+}
+async function savedForm(check) {
+  await expect.poll(async () => (await api('/settings')).body.form, { timeout: 5000 }).toMatchObject(check);
+}
+try {
+  await page.goto(base + '/');
+  await expect(page.getByRole('textbox', { name: '访问密钥' })).toBeEnabled();
+  await page.getByRole('textbox', { name: '访问密钥' }).fill('wrong-fixture-key');
+  await page.getByRole('button', { name: '进入', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('密钥');
+  await login(adminKey);
+  const admin = (await api('/me')).body;
+  assert.equal(admin.role, 'admin');
+  pass('real same-origin login, invalid login, cookie and CSRF session');
+  png = await page.evaluate(() => {
+    const c = document.createElement('canvas'); c.width = 160; c.height = 96;
+    const x = c.getContext('2d'); const g = x.createLinearGradient(0, 0, 160, 96);
+    g.addColorStop(0, '#7c3aed'); g.addColorStop(1, '#06b6d4'); x.fillStyle = g; x.fillRect(0, 0, 160, 96);
+    x.fillStyle = '#fff'; x.font = '18px sans-serif'; x.fillText('LOCAL MOCK', 18, 54);
+    return c.toDataURL('image/png').split(',')[1];
+  });
+  await settings('供应商');
+  await page.getByRole('button', { name: '添加供应商', exact: true }).click();
+  await page.locator('input[name=name]').fill('本地混合模型');
+  await page.locator('input[name=baseUrl]').fill(`http://127.0.0.1:${mock.address().port}/v1`);
+  await page.locator('input[name=apiKey]').fill('local-mock-only');
+  await page.getByText('高级配置', { exact: true }).click();
+  await page.locator('input[name=allowPrivate]').check();
+  const sharing = page.getByRole('switch', { name: '开放共享供应商' });
+  await sharing.click();
+  await expect(sharing).toHaveAttribute('aria-checked', 'true');
+  await page.getByRole('button', { name: '获取模型', exact: true }).click();
+  await page.getByLabel('unknown-model 用途', { exact: true }).click();
+  await page.getByRole('option', {name:'图像 + 文本', exact:true}).click();
+  await page.getByRole('button', { name: '保存供应商', exact: true }).click();
+  await expect(page.locator('.provider-row')).toHaveCount(1);
+  const provider = (await api('/providers')).body[0];
+  assert.equal(provider.models.length, 3);
+  assert.equal(provider.shared, true);
+  assert.equal(provider.apiKey, undefined);
+  assert.equal(service.db.prepare('SELECT apiKey FROM providers WHERE id=?').get(provider.id).apiKey, 'local-mock-only');
+  pass('unsaved-provider discovery, model classification, sharing, secret stays server-side');
+  await page.getByRole('button', { name: '编辑', exact: true }).click();
+  await expect(page.locator('input[name=apiKey]')).toHaveValue('');
+  await page.getByRole('button', { name: '获取模型', exact: true }).click();
+  await expect(page.getByLabel('gpt-4.1 用途', { exact: true })).toHaveAttribute('data-value', 'text');
+  await page.getByRole('button', { name: '保存修改', exact: true }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  assert.equal(modelCalls, 2);
+  assert.equal(service.db.prepare('SELECT apiKey FROM providers WHERE id=?').get(provider.id).apiKey, 'local-mock-only');
+  pass('saved provider rediscovery and blank API key preservation');
+  await settings('默认模型');
+  await pick('默认图像模型', 'gpt-image-1');
+  await pick('文本模型', 'gpt-4.1');
+  await page.getByRole('button', { name: '保存默认模型', exact: true }).click();
+  await expect.poll(async () => (await api('/settings')).body.imageModel).toBe('gpt-image-1');
+  await studio();
+  await expect(page.getByRole('combobox', { name: '图像模型', exact: true })).toHaveAttribute('data-value', JSON.stringify([provider.id, 'gpt-image-1']));
+  await page.getByRole('button', { name: '快速生成提示词', exact: true }).click();
+  const quick = page.getByRole('dialog', { name: '快速生成提示词' });
+  await expect(quick.getByRole('button', { name: '生成提示词', exact: true })).toBeDisabled();
+  await quick.getByLabel('简短意图').fill('集成测试原始意图');
+  await quick.getByRole('button', { name: '生成提示词', exact: true }).click();
+  await expect(quick.getByLabel('生成结果')).toHaveValue('优化后的测试提示词\n保留换行');
+  await quick.getByRole('button', { name: '填入提示词', exact: true }).click();
+  await expect(page.getByLabel('提示词', { exact: true })).toHaveValue('优化后的测试提示词\n保留换行');
+  pass('independent defaults and real rewrite API');
+  const upload = { name: 'reference.png', mimeType: 'image/png', buffer: Buffer.from(png, 'base64') };
+  await page.getByLabel('参考图', { exact: true }).setInputFiles(upload);
+  await expect(page.locator('.composer .references img')).toHaveCount(1);
+  const previewResponse = page.waitForResponse(r => r.url() === base + '/api/jobs' && r.request().method() === 'POST', { timeout: 700 }).then(() => true, () => false);
+  await page.getByRole('button', { name: '查看参考图', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: '图片预览' })).toBeVisible();
+  assert.equal(await previewResponse, false, 'previewing a reference must not submit a potentially paid generation');
+  await page.keyboard.press('Escape');
+  for (const name of ['查看参考图', '复制参考图', '移除参考图'])
+    await expect(page.getByRole('button', { name, exact: true })).toHaveAttribute('type', 'button');
+  pass('reference preview/copy/remove are non-submitting while prompt is populated');
+  await page.getByLabel('提示词', { exact: true }).evaluate((el, data) => {
+    const dt = new DataTransfer(); dt.items.add(new File([Uint8Array.from(atob(data), c => c.charCodeAt(0))], 'clipboard.png', { type: 'image/png' }));
+    el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+  }, png);
+  await page.waitForTimeout(250);
+  await expect(page.locator('.composer .references img')).toHaveCount(1);
+  const prevented = await page.getByLabel('提示词', { exact: true }).evaluate(el => {
+    const dt = new DataTransfer(); dt.setData('text/plain', 'ordinary');
+    const e = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }); el.dispatchEvent(e); return e.defaultPrevented;
+  });
+  assert.equal(prevented, false);
+  await page.getByLabel('张数', { exact: true }).fill('4');
+  await savedForm({ prompt: '优化后的测试提示词\n保留换行', count: 4 });
+  const reference = (await api('/settings')).body.form.references[0];
+  await page.reload();
+  await expect(page.getByLabel('提示词', { exact: true })).toHaveValue('优化后的测试提示词\n保留换行');
+  await expect(page.locator('.composer .references img')).toHaveCount(1);
+  pass('reference upload/paste dedupe, normal text paste and persisted draft/reference reload');
+  await page.getByRole('button', { name: '生成 4 张图片', exact: true }).click();
+  await expect(page.getByLabel('提示词', { exact: true })).toHaveValue('');
+  await expect(page.locator('.composer .references img')).toHaveCount(0);
+  await expect(page.locator('.status.succeeded')).toHaveCount(1, { timeout: 15000 });
+  await expect(page.locator('.result-images img')).toHaveCount(4);
+  assert.equal(calls.length, 4);
+  assert.equal(maxActive, 1);
+  assert.equal(service.db.prepare('SELECT count(*) n FROM tasks WHERE status=?').get('succeeded').n, 4);
+  assert.equal(service.db.prepare('SELECT count(DISTINCT asset) n FROM tasks').get().n, 4);
+  for (const call of calls) {
+    assert.equal(call.url, '/v1/images/edits');
+    assert.match(call.type, /^multipart\/form-data; boundary=/);
+    assert.match(call.raw, /name="image\[\]"/);
+    assert.doesNotMatch(call.raw, /name="(?:size|aspect_ratio|resolution)"/);
+  }
+  await savedForm({ prompt: '', references: [] });
+  pass('concurrency 1 retains four requests/results, real multipart reference, auto size omitted, success clears persisted draft');
+  const jobs = (await api('/jobs')).body;
+  const job = jobs[0], asset = job.tasks[0].asset;
+  await expect(page.locator('.actual-spec').first()).toHaveText('160 × 96');
+  const assetUrl = '/api/assets/' + asset;
+  assert.equal(assets.get(assetUrl), 1);
+  await page.getByRole('button', { name: '查看图片', exact: true }).first().click();
+  const lightbox = page.getByRole('dialog', { name: '图片预览' });
+  await expect(lightbox.locator('img')).toBeVisible();
+  await lightbox.getByRole('button', { name: '放大', exact: true }).click();
+  const downloadEvent = page.waitForEvent('download');
+  await lightbox.getByRole('button', { name: '下载原图', exact: true }).click();
+  const download = await downloadEvent;
+  assert.deepEqual(readFileSync(await download.path()), Buffer.from(png, 'base64'));
+  assert.equal(assets.get(assetUrl), 1);
+  await page.keyboard.press('Escape');
+  await expect(lightbox).toHaveCount(0);
+  pass('actual output dimensions and one original GET reused for preview/zoom/download');
+  await page.getByLabel('提示词', { exact: true }).fill('replace me');
+  await page.getByRole('button', { name: '重试', exact: true }).click();
+  await expect(page.getByLabel('提示词', { exact: true })).toHaveValue(job.form.prompt);
+  await expect(page.locator('.composer .references img')).toHaveCount(1);
+  assert.equal(calls.length, 4);
+  await page.getByRole('button', { name: '清空提示词和参考图', exact: true }).click();
+  await savedForm({ prompt: '', references: [] });
+  await page.reload();
+  await expect(page.getByLabel('提示词', { exact: true })).toHaveValue('');
+  await expect(page.locator('.composer .references img')).toHaveCount(0);
+  pass('retry restores exact multiline prompt/references without generation; explicit clear persists');
+  await page.getByLabel('提示词', { exact: true }).fill('保留最新草稿，不应被默认模型保存覆盖');
+  await savedForm({ prompt: '保留最新草稿，不应被默认模型保存覆盖' });
+  await settings('默认模型');
+  await page.getByRole('button', { name: '保存默认模型', exact: true }).click();
+  await expect(page.locator('.toast[data-type="success"]')).toContainText('默认模型已保存');
+  await page.reload();
+  await expect(page.getByLabel('提示词', { exact: true })).toHaveValue('保留最新草稿，不应被默认模型保存覆盖');
+  pass('saving model defaults preserves the latest persisted draft');
+  const legacy = { ...job.form, autoSize: false, size: '1792x1024', ratio: '16:9' };
+  delete legacy.resolution; delete legacy.manualSize;
+  service.db.prepare('UPDATE jobs SET form=? WHERE id=?').run(JSON.stringify(legacy), job.id);
+  await page.reload();
+  await page.getByRole('button', { name: '重试', exact: true }).click();
+  await expect(page.locator('.dimensions')).toContainText('1792x1024');
+  await expect(page.getByLabel('分辨率', { exact: true })).toHaveAttribute('data-value', 'custom');
+  await expect(page.locator('.composer .references img')).toHaveCount(1);
+  assert.equal(calls.length, 4);
+  pass('legacy non-preset dimensions/refill preserved and shown as compatible historical size');
+  await page.getByRole('button', { name: '清空提示词和参考图', exact: true }).click();
+  await savedForm({ prompt: '', references: [] });
+  await page.evaluate(() => scrollTo(0, 0));
+  await shot('desktop');
+  await page.getByRole('button', { name: '切换主题', exact: true }).click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  await shot('dark');
+  await page.getByRole('button', { name: '切换主题', exact: true }).click();
+  await settings('站点样式');
+  const iconBox = await page.locator('.site-icon-preview').boundingBox();
+  assert.equal(iconBox.width, 80); assert.equal(iconBox.height, 80);
+  const fileStyle = await page.locator('input[type=file][aria-label="站点图标"]').evaluate(el => ({ rect: el.getBoundingClientRect().toJSON(), clip: getComputedStyle(el).clipPath, tab: el.tabIndex }));
+  assert.ok(fileStyle.rect.width <= 1 && fileStyle.rect.height <= 1 && fileStyle.tab === -1);
+  await expect(page.getByRole('button', { name: '上传图标', exact: true })).toBeVisible();
+  await page.getByLabel('站点标题', { exact: true }).fill('Bimage 集成验证');
+  await page.locator('input[type=file][aria-label="站点图标"]').setInputFiles({ ...upload, name: 'icon.png' });
+  await expect(page.locator('.site-icon-preview')).toHaveAttribute('src', 'data:image/png;base64,' + png);
+  await page.getByRole('button', { name: '保存站点设置', exact: true }).click();
+  await expect.poll(async () => (await api('/site')).body.title).toBe('Bimage 集成验证');
+  await expect(page).toHaveTitle('Bimage 集成验证 | 设置');
+  await expect(page.locator('link[rel=icon]')).toHaveAttribute('href', 'data:image/png;base64,' + png);
+  await shot('settings-icon');
+  await page.getByRole('button', { name: '恢复默认图标', exact: true }).click();
+  await page.getByRole('button', { name: '保存站点设置', exact: true }).click();
+  await expect.poll(async () => (await api('/site')).body.icon).toBe('/Bimage.png');
+  pass('site title/icon real save/read-back/reset, 80px preview and hidden native file with custom upload');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await studio();
+  if (await page.getByRole('button', { name: '关闭通知', exact: true }).count())
+    await page.getByRole('button', { name: '关闭通知', exact: true }).click();
+  await page.evaluate(() => scrollTo(0, 0));
+  await shot('mobile');
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  await page.locator('.history').scrollIntoViewIfNeeded();
+  await expect.poll(() => page.locator('.result-images img').evaluateAll(images => images.length === 4 && images.every(image => image.complete && image.naturalWidth > 0))).toBe(true);
+  await shot('mobile-results');
+  await settings('密钥');
+  await page.locator('input[name=name]').fill('隔离成员');
+  await page.getByRole('button', { name: '创建访问密钥', exact: true }).click();
+  await expect(page.locator('.secret')).toBeVisible();
+  const memberKey = await page.locator('.secret').textContent();
+  await studio();
+  await page.getByLabel('提示词', { exact: true }).fill('管理员私密草稿');
+  const logoutResponse = page.waitForResponse(r => r.url() === base + '/api/logout');
+  await page.getByRole('button', { name: '退出登录', exact: true }).click();
+  assert.equal((await logoutResponse).status(), 200);
+  await expect(page.getByRole('button', { name: '进入', exact: true })).toBeEnabled();
+  assert.equal((await context.cookies()).filter(c => c.name === 'canvas_session').length, 0);
+  assert.equal(service.db.prepare('SELECT count(*) n FROM sessions WHERE owner=?').get(admin.id).n, 0);
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await page.reload();
+  await expect(page.getByRole('button', { name: '进入', exact: true })).toBeEnabled();
+  // Keep every assertion and the real 180/min middleware. The full admin
+  // interaction suite intentionally performs a burst of requests; start the
+  // independent member checks after that window while logged out (no polling).
+  await page.waitForTimeout(61000);
+  await login(memberKey);
+  await expect(page.getByLabel('提示词', { exact: true })).toHaveValue('');
+  await expect(page.locator('.job')).toHaveCount(0);
+  await expect(page.locator('.secret')).toHaveCount(0);
+  await expect(page.locator('.composer .references img')).toHaveCount(0);
+  assert.equal((await api('/assets/' + reference)).status, 404);
+  assert.equal((await api('/assets/' + asset)).status, 404);
+  const shared = (await api('/providers')).body[0];
+  assert.equal(shared.baseUrl, undefined); assert.equal(shared.owner, undefined); assert.equal(shared.allowPrivate, undefined);
+  assert.equal(shared.canManage, false);
+  await settings('供应商');
+  await expect(page.getByRole('button', { name: '编辑', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('tab', { name: '密钥', exact: true })).toHaveCount(0);
+  pass('390px layout, normal logout 200 revokes cookie/DB session, reload remains logged out, tenant and shared-provider isolation');
+  await page.getByRole('button', { name: '退出登录' }).click();
+  await expect(page.getByRole('button', { name: '进入', exact: true })).toBeEnabled();
+  await login(adminKey);
+  await page.getByRole('button', { name: '删除', exact: true }).click();
+  const deletion = page.getByRole('dialog', { name: '删除任务' });
+  const deleted = page.waitForResponse(r => r.url() === base + '/api/jobs/' + job.id && r.request().method() === 'DELETE');
+  await deletion.getByRole('button', { name: '永久删除', exact: true }).click();
+  const deletionResponse = await deleted;
+  assert.equal(deletionResponse.status(), 200);
+  assert.deepEqual(new Set((await deletionResponse.json()).deletedAssetIds), new Set(job.tasks.map(task => task.asset)));
+  await expect(page.locator('.job')).toHaveCount(0);
+  assert.equal(service.db.prepare('SELECT count(*) n FROM jobs WHERE id=?').get(job.id).n, 0);
+  assert.equal(service.db.prepare('SELECT count(*) n FROM tasks WHERE job=?').get(job.id).n, 0);
+  for (const task of job.tasks) assert.equal(service.db.prepare('SELECT id FROM assets WHERE id=?').get(task.asset), undefined);
+  assert.equal((await api('/jobs/' + job.id)).status, 404);
+  assert.equal((await api('/jobs/' + job.id + '/download')).status, 404);
+  assert.equal((await api('/assets/' + asset)).status, 404);
+  assert.equal(service.db.prepare('SELECT id FROM assets WHERE id=?').get(reference).id, reference);
+  await page.reload();
+  await expect(page.getByRole('heading', { name: '暂无任务记录' })).toBeVisible();
+  assert.equal(calls.length, 4);
+  pass('real deletion removes job, tasks and all four output blobs, preserves source reference and survives reload');
+  const prompt = page.getByLabel('提示词', { exact: true });
+  await prompt.fill('待优化的原始提示词。');
+  await page.getByLabel('参考图', { exact: true }).setInputFiles(upload);
+  await expect(page.getByRole('button', { name: '查看参考图', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '优化', exact: true }).click();
+  await expect(page.getByRole('button', { name: '应用', exact: true })).toBeVisible();
+  await expect(page.locator('.prompt-box textarea')).toHaveCount(1);
+  assert.deepEqual(rewrites.at(-1), [{ type: 'text', text: '待优化的原始提示词。' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,' + png } }]);
+  await prompt.fill('用户编辑后的建议\n保留换行');
+  await page.getByRole('button', { name: '应用', exact: true }).click();
+  await expect(prompt).toHaveValue('用户编辑后的建议\n保留换行');
+  await savedForm({ prompt: '用户编辑后的建议\n保留换行', references: [reference] });
+  assert.equal(calls.length, 4);
+  pass('inline optimization sends the current text and reference to the real rewrite API and saves only applied edits');
+  assert.deepEqual(errors, []);
+  pass('zero browser pageerror or non-local network requests');
+  writeFileSync(path.join(evidence, 'integration-green.json'), JSON.stringify({ status: 'passed', passed: passes.length, checks: passes, upstream: { scope: 'local mock only; not paid model verification', calls: calls.length, maxActive }, network, errors }, null, 2));
+  console.log(`BIMAGE INTEGRATION: ${passes.length} checks passed, ${calls.length} local image requests, zero paid calls`);
+} catch (e) {
+  await shot('failure').catch(() => {});
+  writeFileSync(path.join(evidence, 'integration-red.json'), JSON.stringify({ status: 'failed', error: e.stack, passed: passes, network, errors, body: await page.locator('body').innerText().catch(() => '') }, null, 2));
+  throw e;
+} finally {
+  await browser.close();
+  await new Promise(resolve => apiServer.close(resolve));
+  await service.close();
+  await new Promise(resolve => mock.close(resolve));
+  rmSync(scratch, { recursive: true, force: true });
+}
