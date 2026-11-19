@@ -82,10 +82,6 @@ docker compose up -d --build --wait
 
 对外部署时请启用 HTTPS，并备份 `data/`；其中包含任务历史、图片和供应商凭据，不应提交到 Git。更多运行参数见[后端配置](backend/README.md)，接口说明见 [API 文档](docs/API.md)。
 
-## 贡献者
-
-- **ChatGPT**（AI 助手）：每次都说「再补一个测试」，结果从来不止一个。
-
 ## 许可证
 
 本项目基于 [MIT License](LICENSE) 开源。
