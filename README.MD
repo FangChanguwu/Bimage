@@ -82,6 +82,10 @@ The workbench is available at [http://localhost:6767](http://localhost:6767) by 
 
 Use HTTPS for public deployments. Back up `data/` and keep it out of Git because it contains job history, images, and provider credentials. See the [backend configuration](backend/README.md) and the [API reference (Chinese)](docs/API.md) for details.
 
+## Contributors
+
+- **ChatGPT** (AI assistant): Kept saying “one more test.” It was never just one.
+
 ## License
 
 Bimage is licensed under the [MIT License](LICENSE).
