@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
+import { t } from '../i18n';
 import { Plus } from 'lucide-vue-next';
 import Modal from './Modal.vue';
 import SelectControl from './SelectControl.vue';
@@ -11,7 +12,7 @@ const directory = ref<AccountDirectory>();
 const loading = ref(false), loadError = ref('');
 const creating = ref(false), saving = ref(false), createError = ref('');
 const email = ref(''), name = ref(''), password = ref(''), role = ref<AccountRole>('user'), concurrency = ref('1');
-const roles = [{ value: 'user', label: '用户' }, { value: 'admin', label: '管理员' }];
+const roles = computed(() => [{ value: 'user', label: t('用户') }, { value: 'admin', label: t('管理员') }]);
 const limits = Array.from({ length: 8 }, (_, i) => ({ value: String(i + 1), label: String(i + 1) }));
 
 async function load() {
@@ -65,14 +66,14 @@ async function create() {
   <div class="account-settings">
     <section class="panel settings-section" aria-labelledby="accounts-heading">
       <div class="section-head">
-        <h2 id="accounts-heading">用户列表 <span v-if="directory" class="account-count">{{ directory.users.length }} 位</span></h2>
-        <button type="button" class="primary" :disabled="!directory" @click="open"><Plus :size="16" aria-hidden="true" />创建用户</button>
+        <h2 id="accounts-heading">{{ t('用户列表') }} <span v-if="directory" class="account-count">{{ t('{count} 位', { count: directory.users.length }) }}</span></h2>
+        <button type="button" class="primary" :disabled="!directory" @click="open"><Plus :size="16" aria-hidden="true" />{{ t('创建用户') }}</button>
       </div>
-      <p class="muted">为用户分配登录账号与同时处理的图像请求数。</p>
-      <p v-if="loading" class="muted" role="status">正在加载用户…</p>
+      <p class="muted">{{ t('为用户分配登录账号与同时处理的图像请求数。') }}</p>
+      <p v-if="loading" class="muted" role="status">{{ t('正在加载用户…') }}</p>
       <div v-else-if="loadError" class="account-load-error">
-        <p class="error-message" role="alert">{{ loadError }}</p>
-        <button type="button" @click="load">重试</button>
+        <p class="error-message" role="alert">{{ t(loadError) }}</p>
+        <button type="button" @click="load">{{ t('重试') }}</button>
       </div>
       <ul v-else-if="directory?.users.length" class="account-list">
         <li v-for="user in directory.users" :key="user.id" class="account-row">
@@ -81,35 +82,35 @@ async function create() {
             <span :class="{ muted: user.name && user.name !== user.email }">{{ user.email }}</span>
           </div>
           <div class="account-details">
-            <span class="badge" :class="{ neutral: user.role !== 'admin' }">{{ user.role === 'admin' ? '管理员' : '用户' }}</span>
-            <span class="account-limit">并发上限 {{ user.concurrency }}</span>
+            <span class="badge" :class="{ neutral: user.role !== 'admin' }">{{ t(user.role === 'admin' ? '管理员' : '用户') }}</span>
+            <span class="account-limit">{{ t('并发上限 {count}', { count: user.concurrency }) }}</span>
           </div>
         </li>
       </ul>
-      <p v-else class="muted">尚无用户。</p>
+      <p v-else class="muted">{{ t('尚无用户。') }}</p>
     </section>
-    <Modal v-if="creating" title="创建用户" :locked="saving" @close="close">
+    <Modal v-if="creating" :title="t('创建用户')" :locked="saving" @close="close">
       <form class="account-form" :aria-busy="saving" @submit.prevent="create" @input="createError = ''">
         <fieldset :disabled="saving">
-          <label>邮箱<input v-model="email" name="email" type="email" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="254" required autofocus /></label>
-          <label>密码<input v-model="password" name="new-password" type="password" autocomplete="new-password" minlength="5" required aria-describedby="account-password-hint" /></label>
-          <small class="account-hint" id="account-password-hint">至少 5 个字符。</small>
-          <label>用户名（可选）<input v-model="name" name="name" autocomplete="off" maxlength="100" /></label>
+          <label>{{ t('邮箱') }}<input v-model="email" name="email" type="email" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="254" required autofocus /></label>
+          <label>{{ t('密码') }}<input v-model="password" name="new-password" type="password" autocomplete="new-password" minlength="5" required aria-describedby="account-password-hint" /></label>
+          <small class="account-hint" id="account-password-hint">{{ t('至少 5 个字符。') }}</small>
+          <label>{{ t('用户名（可选）') }}<input v-model="name" name="name" autocomplete="off" maxlength="100" /></label>
           <div class="account-field-grid">
             <div class="account-field">
-              <span aria-hidden="true">角色</span>
-              <SelectControl :model-value="role" :options="roles" label="角色" :disabled="saving" @update:model-value="role = $event === 'admin' ? 'admin' : 'user'; createError = ''" />
+              <span aria-hidden="true">{{ t('角色') }}</span>
+              <SelectControl :model-value="role" :options="roles" :label="t('角色')" :disabled="saving" @update:model-value="role = $event === 'admin' ? 'admin' : 'user'; createError = ''" />
             </div>
             <div class="account-field">
-              <span aria-hidden="true">并发上限</span>
-              <SelectControl v-model="concurrency" :options="limits" label="并发上限" :disabled="saving" @update:model-value="createError = ''" />
+              <span aria-hidden="true">{{ t('并发上限') }}</span>
+              <SelectControl v-model="concurrency" :options="limits" :label="t('并发上限')" :disabled="saving" @update:model-value="createError = ''" />
             </div>
           </div>
-          <small class="account-hint">可同时执行的图像请求数，范围为 1–8。</small>
-          <p v-if="createError" class="error-message" role="alert">{{ createError }}</p>
+          <small class="account-hint">{{ t('可同时执行的图像请求数，范围为 1–8。') }}</small>
+          <p v-if="createError" class="error-message" role="alert">{{ t(createError) }}</p>
           <footer class="form-footer">
-            <button type="button" @click="close">取消</button>
-            <button type="submit" class="primary">{{ saving ? '正在创建…' : '创建用户' }}</button>
+            <button type="button" @click="close">{{ t('取消') }}</button>
+            <button type="submit" class="primary">{{ t(saving ? '正在创建…' : '创建用户') }}</button>
           </footer>
         </fieldset>
       </form>

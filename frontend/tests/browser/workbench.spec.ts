@@ -377,7 +377,9 @@ test('logout failure is a transient typed warning, never a persistent login erro
 test('typed success and error notifications are top-centered, live and copy waits for the actual clipboard promise', async ({page}) => {
   await fixture(page);
   await page.addInitScript(() => {
-    Object.defineProperty(navigator, 'clipboard', {value: { write: () => new Promise((resolve, reject) => { (window as any).finishCopy = resolve; (window as any).failCopy = () => reject(new Error('fixture clipboard denied')); }) }});
+    const state = window as Window & { clipboardWrites?: number; finishCopy?: () => void; failCopy?: () => void };
+    state.clipboardWrites = 0;
+    Object.defineProperty(navigator, 'clipboard', {value: { write: () => new Promise<void>((resolve, reject) => { state.clipboardWrites = (state.clipboardWrites ?? 0) + 1; state.finishCopy = resolve; state.failCopy = () => reject(new Error('fixture clipboard denied')); }) }});
     if (!window.ClipboardItem) (window as any).ClipboardItem = class { constructor(_: unknown) {} };
   });
   await page.goto('/');
@@ -402,6 +404,7 @@ test('typed success and error notifications are top-centered, live and copy wait
   await expect(toast).toHaveCount(0);
   await page.getByRole('button',{name:'复制',exact:true}).click();
   await expect(toast).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => (window as Window & { clipboardWrites?: number }).clipboardWrites)).toBe(2);
   await page.evaluate(() => (window as any).finishCopy());
   await expect(toast).toHaveAttribute('data-type','success');
   await expect(toast).toContainText('复制成功');

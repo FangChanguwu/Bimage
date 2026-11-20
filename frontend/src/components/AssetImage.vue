@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, watch, onBeforeUnmount, onMounted } from "vue";
 import { assetCache } from "../composables/assetCache";
+import { t } from "../i18n";
 const props = defineProps<{
   asset: string;
   signal: AbortSignal;
@@ -79,7 +80,7 @@ onBeforeUnmount(() => {
   <img
     ref="image"
     :src="src || undefined"
-    :alt="error ? '图片加载失败，请重新打开' : alt"
+    :alt="error ? t('图片加载失败，请重新打开') : alt"
     draggable="false"
   />
 </template>

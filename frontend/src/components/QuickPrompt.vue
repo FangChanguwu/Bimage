@@ -5,6 +5,7 @@ import Modal from "./Modal.vue";
 import ReferenceImages from "./ReferenceImages.vue";
 import { useReferences } from "../composables/useReferences";
 import { rewritePrompt } from "../composables/promptRewrite";
+import { t } from "../i18n";
 import type { GenerationForm, Settings, Api, Run } from "../types";
 const props = defineProps<{
   form: GenerationForm;
@@ -69,23 +70,23 @@ async function generate() {
 }
 </script>
 <template>
-  <Modal title="快速生成提示词" :locked="busy" @close="close"
+  <Modal :title="t('快速生成提示词')" :locked="busy" @close="close"
     ><p class="muted">
-      用快速提示词模型补写提示词，不会直接生成图片。参考图需要模型支持视觉输入。
+      {{ t('用快速提示词模型补写提示词，不会直接生成图片。参考图需要模型支持视觉输入。') }}
     </p>
     <label
-      >简短意图<textarea
+      >{{ t('简短意图') }}<textarea
         v-model="intent"
-        aria-label="简短意图"
+        :aria-label="t('简短意图')"
         rows="4"
         :disabled="busy"
-        placeholder="例如：雨夜街头的一只猫，电影感光影"
+        :placeholder="t('例如：雨夜街头的一只猫，电影感光影')"
         @paste="paste"
       /></label
     ><input
       ref="file"
       class="visually-hidden"
-      aria-label="快速提示词参考图"
+      :aria-label="t('快速提示词参考图')"
       type="file"
       accept="image/png,image/jpeg,image/webp"
       multiple
@@ -97,7 +98,7 @@ async function generate() {
       :disabled="busy || refs.pending.value"
       @click="file?.click()"
     >
-      <ImagePlus :size="18" />添加参考图 · 或粘贴图片</button
+      <ImagePlus :size="18" />{{ t('添加参考图 · 或粘贴图片') }}</button
     ><ReferenceImages
       :references="references"
       :disabled="busy"
@@ -108,8 +109,8 @@ async function generate() {
     <p class="muted">
       {{
         settings.quickModel
-          ? "快速提示词模型 · " + settings.quickModel
-          : "请先在供应商设置中配置快速提示词模型"
+          ? t('快速提示词模型 · {model}', { model: settings.quickModel })
+          : t('请先在供应商设置中配置快速提示词模型')
       }}
     </p>
     <button
@@ -122,20 +123,20 @@ async function generate() {
       "
       @click="generate"
     >
-      <WandSparkles :size="16" />{{ busy ? "补写中…" : "生成提示词" }}</button
+      <WandSparkles :size="16" />{{ busy ? t('补写中…') : t('生成提示词') }}</button
     >
-    <span class="visually-hidden" role="status">{{ busy ? "正在补写提示词，请稍候。" : "" }}</span>
+    <span class="visually-hidden" role="status">{{ busy ? t('正在补写提示词，请稍候。') : '' }}</span>
     <label v-if="result"
-      >生成结果<textarea v-model="result" aria-label="生成结果" rows="7" :disabled="busy" />
+      >{{ t('生成结果') }}<textarea v-model="result" :aria-label="t('生成结果')" rows="7" :disabled="busy" />
     </label>
     <footer class="form-footer">
-      <button :disabled="busy" @click="close">取消</button
+      <button :disabled="busy" @click="close">{{ t('取消') }}</button
       ><button
         class="primary"
         :disabled="!result.trim() || busy || refs.pending.value"
         @click="apply"
       >
-        填入提示词
+        {{ t('填入提示词') }}
       </button>
     </footer></Modal
   >

@@ -4,6 +4,7 @@ import { X, Copy } from "lucide-vue-next";
 import AssetImage from "./AssetImage.vue";
 import Lightbox from "./Lightbox.vue";
 import { copyImage } from "../composables/assetCache";
+import { t } from "../i18n";
 import type { Run } from "../types";
 defineProps<{ references: string[]; signal: AbortSignal; run: Run; disabled?: boolean }>();
 const emit = defineEmits<{ remove: [id: string] }>();
@@ -15,27 +16,27 @@ const preview = ref("");
       <button
         type="button"
         class="reference-open"
-        aria-label="查看参考图"
+        :aria-label="t('查看参考图')"
         :disabled="disabled"
         @click="preview = id"
       >
         <AssetImage
           :asset="id"
           :signal="signal"
-          :alt="'参考图 ' + (i + 1)"
+          :alt="t('参考图 {index}', { index: i + 1 })"
         /></button
       ><button
         type="button"
         class="reference-copy icon-button"
-        aria-label="复制参考图"
+        :aria-label="t('复制参考图')"
         :disabled="disabled"
-        @click="run(() => copyImage(id, signal), '复制成功')"
+        @click="run(() => copyImage(id, signal), t('复制成功'))"
       >
         <Copy :size="14" /></button
       ><button
         type="button"
         class="reference-remove icon-button"
-        aria-label="移除参考图"
+        :aria-label="t('移除参考图')"
         :disabled="disabled"
         @click="emit('remove', id)"
       >

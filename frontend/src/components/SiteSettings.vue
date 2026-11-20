@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref } from "vue";
+import { t } from '../i18n';
 import { Upload, RotateCcw } from "lucide-vue-next";
 import { fileData } from "../domain";
 import type { Site, Api, Run } from "../types";
@@ -40,23 +41,23 @@ async function save() {
 </script>
 <template>
   <section class="panel settings-section">
-    <h2>站点外观</h2>
-    <p class="muted">用于登录页、侧栏和浏览器标签。随时可以换回默认图标。</p>
+    <h2>{{ t('站点外观') }}</h2>
+    <p class="muted">{{ t('用于登录页、侧栏和浏览器标签。随时可以换回默认图标。') }}</p>
     <form @submit.prevent="save">
       <label
-        >站点标题<input
+        >{{ t('站点标题') }}<input
           v-model="title"
-          aria-label="站点标题"
+          :aria-label="t('站点标题')"
           required
           maxlength="80"
       /></label>
       <div class="field-group">
-        <span id="site-icon-label" class="field-label">站点图标</span>
+        <span id="site-icon-label" class="field-label">{{ t('站点图标') }}</span>
         <div class="site-icon-row" aria-labelledby="site-icon-label">
           <img
             class="site-icon-preview"
             :src="icon || '/Bimage.png'"
-            alt="站点图标预览"
+            :alt="t('站点图标预览')"
             width="80"
             height="80"
           />
@@ -65,28 +66,28 @@ async function save() {
               ref="input"
               class="visually-hidden"
               type="file"
-              aria-label="站点图标"
+              :aria-label="t('站点图标')"
               accept="image/png,image/jpeg,image/webp"
               tabindex="-1"
               @change="select"
             /><button class="upload-icon" type="button" @click="input?.click()">
-              <Upload :size="16" />上传图标
+              <Upload :size="16" />{{ t('上传图标') }}
             </button>
-            <p class="muted">PNG、JPEG 或 WebP · 最大 300 KB</p>
+            <p class="muted">{{ t('PNG、JPEG 或 WebP · 最大 300 KB') }}</p>
             <button
               v-if="icon"
               class="text-button"
               type="button"
               @click="icon = ''"
             >
-              <RotateCcw :size="14" />恢复默认图标
+              <RotateCcw :size="14" />{{ t('恢复默认图标') }}
             </button>
           </div>
         </div>
       </div>
       <footer class="site-save form-footer">
         <button class="primary" type="submit" :disabled="busy">
-          {{ busy ? "保存中…" : "保存站点设置" }}
+          {{ t(busy ? "保存中…" : "保存站点设置") }}
         </button>
       </footer>
     </form>

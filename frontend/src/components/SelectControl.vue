@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from "vue";
 import { Check, ChevronDown } from "lucide-vue-next";
+import { t } from "../i18n";
 export interface SelectOption { value: string; label: string; secondary?: string; disabled?: boolean }
 const props = defineProps<{ modelValue: string; options: SelectOption[]; label: string; disabled?: boolean }>();
 const emit = defineEmits<{ 'update:modelValue': [value: string] }>();
@@ -79,7 +80,7 @@ onBeforeUnmount(() => {
 </script>
 <template>
   <button ref="trigger" type="button" role="combobox" class="select-trigger" :data-value="modelValue" :aria-label="label" aria-haspopup="listbox" :aria-expanded="open" :aria-controls="open ? id : undefined" :aria-activedescendant="open && active >= 0 ? `${id}-${active}` : undefined" :disabled="disabled" :title="selected?.secondary || selected?.label" @click="open ? close() : show()" @keydown="keydown">
-    <span>{{ selected?.label || '请选择' }}</span><ChevronDown :size="16" aria-hidden="true" />
+    <span>{{ selected?.label || t('请选择') }}</span><ChevronDown :size="16" aria-hidden="true" />
   </button>
   <Teleport :to="portal">
     <div v-if="open" :id="id" ref="menu" popover="manual" role="listbox" :aria-label="label" class="select-menu" :style="position" @keydown="keydown" @pointerdown.prevent>

@@ -16,6 +16,12 @@ import ReferenceImages from "./ReferenceImages.vue";
 import { download, copyImage } from "../composables/assetCache";
 import { statusLabel } from "../domain";
 import type { Job, Task, Api, Run } from "../types";
+import { t, locale, formatDate } from "../i18n";
+const detailLabels: Record<string, string> = {
+  model: '模型', count: '张数', size: '尺寸', autoSize: '自动尺寸',
+  resolution: '分辨率', ratio: '比例', quality: '质量',
+  output_format: '输出格式', aspect_ratio: '宽高比',
+};
 const props = defineProps<{
   job: Job;
   api: Api;
@@ -69,22 +75,22 @@ async function deleteJob() {
           v-if="job.status === 'running'"
           class="spinner"
           :size="14"
-        />{{ statusLabel[job.status] || job.status
-        }}<small v-if="duration"> · 用时 {{ duration }}秒</small></span
+        />{{ t(statusLabel[job.status] || job.status)
+        }}<small v-if="duration"> · {{ t('用时 {duration}秒', { duration }) }}</small></span
       ><time :datetime="job.created">{{
-        new Date(job.created).toLocaleString()
+        formatDate(job.created)
       }}</time>
     </div>
     <button
       class="prompt-summary"
-      title="查看完整提示词"
+      :title="t('查看完整提示词')"
       @click="details = true"
     >
       {{ job.form.prompt.replace(/\s+/g, " ").trim() }}
     </button>
     <p class="job-meta">
       {{ job.form.model
-      }}<span>{{ success.length }} / {{ job.form.count }} 张</span>
+      }}<span>{{ t('{completed} / {count} 张', { completed: success.length, count: job.form.count }) }}</span>
     </p>
     <div class="result-images">
       <div v-for="(task, i) in job.tasks" :key="task.id" class="result-image">
@@ -98,26 +104,26 @@ async function deleteJob() {
                   ? task.width / task.height
                   : undefined,
             }"
-            aria-label="查看图片"
+            :aria-label="t('查看图片')"
             @click="preview = task"
           >
             <AssetImage
               :asset="task.asset"
               :signal="signal"
-              :alt="'生成图片 ' + (i + 1)"
+              :alt="t('生成图片 {number}', { number: i + 1 })"
             />
           </button>
           <div class="result-caption">
             <small class="actual-spec">{{
               task.width && task.height
                 ? `${task.width} × ${task.height}`
-                : "规格未知"
+                : t('规格未知')
             }}</small>
             <div class="image-tools">
               <button
                 type="button"
                 class="icon-button"
-                aria-label="下载图片"
+                :aria-label="t('下载图片')"
                 @click="
                   run(() =>
                     download(
@@ -133,8 +139,8 @@ async function deleteJob() {
               <button
                 type="button"
                 class="icon-button"
-                aria-label="复制图片"
-                @click="run(() => copyImage(task.asset!, signal), '复制成功')"
+                :aria-label="t('复制图片')"
+                @click="run(() => copyImage(task.asset!, signal), t('复制成功'))"
               >
                 <Copy :size="15" />
               </button>
@@ -146,8 +152,8 @@ async function deleteJob() {
             v-if="task.status === 'running'"
             class="spinner"
             :size="23"
-          /><span>{{ statusLabel[task.status] || task.status }}</span
-          ><small v-if="task.error" class="task-error">{{ task.error }}</small>
+          /><span>{{ t(statusLabel[task.status] || task.status) }}</span
+          ><small v-if="task.error" class="task-error">{{ t(task.error) }}</small>
         </div>
       </div>
     </div>
@@ -164,35 +170,35 @@ async function deleteJob() {
           )
         "
       >
-        <Download :size="15" />下载</button
-      ><button title="仅恢复完整参数，不自动生成" @click="emit('restore')">
-        <RotateCcw :size="15" />重试</button
+        <Download :size="15" />{{ t('下载') }}</button
+      ><button :title="t('仅恢复完整参数，不自动生成')" @click="emit('restore')">
+        <RotateCcw :size="15" />{{ t('重试') }}</button
       ><button :disabled="!success.length" @click="repairing = true">
-        <Paintbrush :size="15" />局部修复</button
+        <Paintbrush :size="15" />{{ t('局部修复') }}</button
       ><button
         v-if="canCancel || cancelling"
         type="button"
-        title="只取消排队中的任务，已开始生成的图片不受影响"
+        :title="t('只取消排队中的任务，已开始生成的图片不受影响')"
         :disabled="cancelling"
         @click="emit('cancel')"
       >
-        {{ cancelling ? "取消中…" : "取消排队" }}
+        {{ t(cancelling ? '取消中…' : '取消排队') }}
       </button>
       <button v-if="canDelete" type="button" class="delete-job" @click="confirmingDelete = true">
-        <Trash2 :size="15" />删除
+        <Trash2 :size="15" />{{ t('删除') }}
       </button>
     </footer>
-    <Modal v-if="confirmingDelete" title="删除任务" :locked="deleting" @close="confirmingDelete = false">
-      <p class="delete-description">任务记录和未被其他任务或草稿引用的生成图片将永久删除。此操作无法撤销。</p>
+    <Modal v-if="confirmingDelete" :title="t('删除任务')" :locked="deleting" @close="confirmingDelete = false">
+      <p class="delete-description">{{ t('任务记录和未被其他任务或草稿引用的生成图片将永久删除。此操作无法撤销。') }}</p>
       <p class="delete-prompt">{{ job.form.prompt }}</p>
       <footer class="form-footer">
-        <button type="button" autofocus :disabled="deleting" @click="confirmingDelete = false">取消</button>
+        <button type="button" autofocus :disabled="deleting" @click="confirmingDelete = false">{{ t('取消') }}</button>
         <button type="button" class="delete-confirm" :disabled="deleting || !canDelete" @click="deleteJob">
-          {{ deleting ? "删除中…" : "永久删除" }}
+          {{ t(deleting ? '删除中…' : '永久删除') }}
         </button>
       </footer>
     </Modal>
-    <Modal v-if="details" title="任务详情" @close="details = false"
+    <Modal v-if="details" :title="t('任务详情')" @close="details = false"
       ><p class="detail-prompt">{{ job.form.prompt }}</p>
       <dl class="job-details">
         <template v-for="(value, key) in job.form" :key="key"
@@ -202,21 +208,21 @@ async function deleteJob() {
                 key,
               )
             "
-            ><dt>{{ key }}</dt>
+            ><dt>{{ locale === 'en' ? t(detailLabels[key] || key) : key }}</dt>
             <dd>{{ value }}</dd></template
           ></template
         >
       </dl>
-      <h3>实际规格</h3>
+      <h3>{{ t('实际规格') }}</h3>
       <p v-for="task in job.tasks" :key="task.id">
-        {{ statusLabel[task.status] }} ·
+        {{ t(statusLabel[task.status] || task.status) }} ·
         {{
           task.width && task.height
             ? `${task.width} × ${task.height}`
-            : "规格未知"
-        }}<span v-if="task.error" class="error-message">{{ task.error }}</span>
+            : t('规格未知')
+        }}<span v-if="task.error" class="error-message">{{ t(task.error) }}</span>
       </p>
-      <h3>参考图</h3>
+      <h3>{{ t('参考图') }}</h3>
       <ReferenceImages
         :references="job.form.references"
         :signal="signal"

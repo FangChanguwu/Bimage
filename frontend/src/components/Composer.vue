@@ -15,6 +15,7 @@ import ReferenceImages from "./ReferenceImages.vue";
 import { useReferences } from "../composables/useReferences";
 import { comparePrompts, composePrompt, editPromptReview, PROMPT_LIMIT, reviewText, rewritePrompt, type PromptRun } from "../composables/promptRewrite";
 import { dimensions } from "../domain";
+import { t } from "../i18n";
 import { resolveTextDefaults } from "../composables/textDefaults";
 import type { GenerationForm, Provider, Api, Run, Settings } from "../types";
 const props = defineProps<{
@@ -162,17 +163,20 @@ async function finishReview(apply: boolean) {
 function submit() {
   if (!optimizing.value && !review.value && !props.busy && !refs.pending.value) emit("generate");
 }
+function generationLabel(count: number) {
+  return count === 1 ? t('生成 1 张图片') : t('生成 {count} 张图片', { count });
+}
 </script>
 <template>
   <section class="composer" aria-labelledby="composer-title">
     <div class="section-head">
-      <h2 id="composer-title">创作参数</h2>
+      <h2 id="composer-title">{{ t('创作参数') }}</h2>
       <div class="actions">
         <button
           type="button"
           class="icon-button"
-          title="快速生成提示词"
-          aria-label="快速生成提示词"
+          :title="t('快速生成提示词')"
+          :aria-label="t('快速生成提示词')"
           :disabled="optimizing || !!review"
           @click="emit('quick')"
         >
@@ -180,8 +184,8 @@ function submit() {
         ><button
           type="button"
           class="icon-button"
-          title="清空提示词和参考图"
-          aria-label="清空提示词和参考图"
+          :title="t('清空提示词和参考图')"
+          :aria-label="t('清空提示词和参考图')"
           :disabled="optimizing"
           @click="clear"
         >
@@ -191,7 +195,7 @@ function submit() {
     </div>
     <form class="panel" @submit.prevent="submit">
       <div class="prompt-field">
-        <label class="prompt-label" for="composer-prompt">提示词</label>
+        <label class="prompt-label" for="composer-prompt">{{ t('提示词') }}</label>
         <div class="prompt-box" :class="{ 'prompt-locked': optimizing, 'prompt-review': review }">
           <pre v-if="review" ref="highlight" class="prompt-input prompt-highlight" aria-hidden="true"><span v-for="(run, index) in review" :key="index" :class="`prompt-diff-${run.kind}`">{{ run.text }}</span>{{ reviewValue.endsWith('\n') ? '\u200b' : '' }}</pre>
           <textarea
@@ -205,7 +209,7 @@ function submit() {
             :disabled="optimizing"
             :aria-describedby="review ? 'prompt-review-hint' : undefined"
             :spellcheck="review ? false : undefined"
-            placeholder="描述你想看见的画面，主体、光线与细节…"
+            :placeholder="t('描述你想看见的画面，主体、光线与细节…')"
             @beforeinput="rememberRange"
             @input="editPrompt"
             @scroll="syncHighlight"
@@ -213,38 +217,38 @@ function submit() {
           />
           <div v-if="review || optimizing || form.prompt.trim()" class="prompt-tools">
             <template v-if="review">
-              <span id="prompt-review-hint" class="visually-hidden">绿色为新增文字，红色划线为将移除的原文。应用时保留未变更和新增文字。</span>
-              <button type="button" @click="finishReview(false)">取消</button>
-              <button type="button" class="prompt-apply" :disabled="!canApply" @click="finishReview(true)">应用</button>
-              <span v-if="revisedPrompt.length > PROMPT_LIMIT" class="prompt-limit" role="status">提示词最多 {{ PROMPT_LIMIT }} 字符</span>
+              <span id="prompt-review-hint" class="visually-hidden">{{ t('绿色为新增文字，红色划线为将移除的原文。应用时保留未变更和新增文字。') }}</span>
+              <button type="button" @click="finishReview(false)">{{ t('取消') }}</button>
+              <button type="button" class="prompt-apply" :disabled="!canApply" @click="finishReview(true)">{{ t('应用') }}</button>
+              <span v-if="revisedPrompt.length > PROMPT_LIMIT" class="prompt-limit" role="status">{{ t('提示词最多 {limit} 字符', { limit: PROMPT_LIMIT }) }}</span>
             </template>
             <button v-else-if="!optimizing" type="button" class="prompt-optimize" :disabled="busy || refs.pending.value" @click="optimize">
-              <WandSparkles :size="15" aria-hidden="true" />优化
+              <WandSparkles :size="15" aria-hidden="true" />{{ t('优化') }}
             </button>
-            <span class="prompt-progress" role="status"><template v-if="optimizing"><LoaderCircle class="spinner" :size="16" aria-hidden="true" />正在优化提示词中，请耐心等待...</template></span>
+            <span class="prompt-progress" role="status"><template v-if="optimizing"><LoaderCircle class="spinner" :size="16" aria-hidden="true" />{{ t('正在优化提示词中，请耐心等待...') }}</template></span>
           </div>
         </div>
       </div>
       <label
-        >图像模型<ModelSelect
+        >{{ t('图像模型') }}<ModelSelect
           :providers="providers"
           kind="image"
           :provider-id="form.providerId"
           :model="form.model"
-          label="图像模型"
+          :label="t('图像模型')"
           @change="
             (p, m) => emit('update:form', { ...form, providerId: p, model: m })
           "
       /></label>
       <div class="reference-field" :class="{ 'reference-locked': optimizing }">
         <div class="field-heading">
-          <span class="field-label">参考图</span
+          <span class="field-label">{{ t('参考图') }}</span
           ><small>{{ form.references.length }} / 16</small>
         </div>
         <input
           ref="file"
           class="visually-hidden"
-          aria-label="参考图"
+          :aria-label="t('参考图')"
           type="file"
           accept="image/png,image/jpeg,image/webp"
           multiple
@@ -258,7 +262,7 @@ function submit() {
           @click="file?.click()"
         >
           <ImagePlus :size="19" />{{
-            refs.pending.value ? "正在上传…" : "添加参考图 · 或粘贴图片"
+            refs.pending.value ? t('正在上传…') : t('添加参考图 · 或粘贴图片')
           }}</button
         ><ReferenceImages
           :references="form.references"
@@ -272,48 +276,48 @@ function submit() {
         <label class="check auto-check"
           ><input
             type="checkbox"
-            aria-label="自动规格"
+            :aria-label="t('自动规格')"
             :checked="form.autoSize"
             @change="
               change('autoSize', ($event.target as HTMLInputElement).checked)
             "
-          />自动规格<span class="muted">由模型决定比例与分辨率</span></label
+          />{{ t('自动规格') }}<span class="muted">{{ t('由模型决定比例与分辨率') }}</span></label
         >
         <div class="field-grid">
           <label
-            >比例<SelectControl
-              label="比例"
+            >{{ t('比例') }}<SelectControl
+              :label="t('比例')"
               :disabled="form.autoSize"
               :model-value="form.autoSize ? 'auto' : form.ratio"
-              :options="[...(form.autoSize ? [{ value: 'auto', label: '自动' }] : []), ...['1:1', '3:2', '2:3', '16:9', '9:16'].map(value => ({value, label: value})), ...(form.ratio === 'custom' ? [{value: 'custom', label: '兼容自定义'}] : [])]"
+              :options="[...(form.autoSize ? [{ value: 'auto', label: t('自动') }] : []), ...['1:1', '3:2', '2:3', '16:9', '9:16'].map(value => ({value, label: t(value)})), ...(form.ratio === 'custom' ? [{value: 'custom', label: t('兼容自定义')}] : [])]"
               @update:model-value="manual('ratio', $event)"
             /></label
           ><label
-            >分辨率<SelectControl
-              label="分辨率"
+            >{{ t('分辨率') }}<SelectControl
+              :label="t('分辨率')"
               :disabled="form.autoSize"
               :model-value="form.autoSize ? 'auto' : form.resolution || 'custom'"
-              :options="[...(form.autoSize ? [{value: 'auto', label: '自动'}] : []), ...['1K', '2K', '4K'].map(value => ({value, label: value})), ...(!form.resolution ? [{value: 'custom', label: '兼容历史尺寸'}] : [])]"
+              :options="[...(form.autoSize ? [{value: 'auto', label: t('自动')}] : []), ...['1K', '2K', '4K'].map(value => ({value, label: t(value)})), ...(!form.resolution ? [{value: 'custom', label: t('兼容历史尺寸')}] : [])]"
               @update:model-value="manual('resolution', $event)"
             /></label
           >
         </div>
         <small v-if="!form.autoSize" class="dimensions"
-          >{{ form.size }} · 实际输出以模型返回为准</small
+          >{{ t('{size} · 实际输出以模型返回为准', { size: form.size }) }}</small
         >
         <div class="field-grid">
           <label
-            >张数
+            >{{ t('张数') }}
             <div class="stepper">
               <button
                 type="button"
-                aria-label="减少张数"
+                :aria-label="t('减少张数')"
                 :disabled="form.count <= 1"
                 @click="change('count', form.count - 1)"
               >
                 <Minus :size="16" /></button
               ><input
-                aria-label="张数"
+                :aria-label="t('张数')"
                 inputmode="numeric"
                 type="number"
                 min="1"
@@ -333,19 +337,19 @@ function submit() {
                 "
               /><button
                 type="button"
-                aria-label="增加张数"
+                :aria-label="t('增加张数')"
                 :disabled="form.count >= 16"
                 @click="change('count', form.count + 1)"
               >
                 <Plus :size="16" />
               </button></div></label
           ><label
-            >质量<SelectControl label="质量" :model-value="form.quality"
-              :options="['auto', 'low', 'medium', 'high', 'standard', 'hd'].map(value => ({value, label: value}))"
+            >{{ t('质量') }}<SelectControl :label="t('质量')" :model-value="form.quality"
+              :options="['auto', 'low', 'medium', 'high', 'standard', 'hd'].map(value => ({value, label: t(value)}))"
               @update:model-value="change('quality', $event)" /></label
           ><label
-            >输出格式<SelectControl label="输出格式" :model-value="form.output_format"
-              :options="['png', 'jpeg', 'webp'].map(value => ({value, label: value}))"
+            >{{ t('输出格式') }}<SelectControl :label="t('输出格式')" :model-value="form.output_format"
+              :options="['png', 'jpeg', 'webp'].map(value => ({value, label: t(value)}))"
               @update:model-value="change('output_format', $event)" /></label
           >
         </div>
@@ -356,7 +360,7 @@ function submit() {
           class="primary generate-button"
           :disabled="busy || refs.pending.value || optimizing || !!review"
         >
-          {{ busy ? "正在提交…" : `生成 ${form.count} 张图片`
+          {{ busy ? t('正在提交…') : generationLabel(form.count)
           }}<ArrowRight :size="18" /></button
         >
       </footer>

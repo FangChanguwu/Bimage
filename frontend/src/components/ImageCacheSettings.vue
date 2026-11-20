@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
+import { t } from '../i18n';
 import { assetCache } from "../composables/assetCache";
 const props = defineProps<{ signal: AbortSignal }>();
 const emit = defineEmits<{ cleared: [] }>();
@@ -20,13 +21,13 @@ async function clear() {
 onMounted(refresh);
 </script>
 <template>
-  <section class="image-cache-settings" aria-label="本地图片缓存">
+  <section class="image-cache-settings" :aria-label="t('本地图片缓存')">
     <div class="cache-copy">
-      <h3>本地图片缓存</h3>
-      <p>已使用 {{ (bytes / 1024 / 1024).toFixed(1) }} MB · {{ count }} 项，最多 128 MB</p>
-      <p>预览缓存保存在此浏览器，刷新后可复用；每次恢复仍会联网验证权限。退出登录或切换账号时自动清除，不影响服务器原图。</p>
+      <h3>{{ t('本地图片缓存') }}</h3>
+      <p>{{ t('已使用 {size} MB · {count} 项，最多 128 MB', { size: (bytes / 1024 / 1024).toFixed(1), count }) }}</p>
+      <p>{{ t('预览缓存保存在此浏览器，刷新后可复用；每次恢复仍会联网验证权限。退出登录或切换账号时自动清除，不影响服务器原图。') }}</p>
     </div>
-    <button type="button" :disabled="busy" @click="clear">{{ busy ? "正在清除…" : "清除图片缓存" }}</button>
+    <button type="button" :disabled="busy" @click="clear">{{ t(busy ? "正在清除…" : "清除图片缓存") }}</button>
   </section>
 </template>
 <style scoped>

@@ -1,6 +1,6 @@
 # Bimage
 
-Bimage is an independent multi-tenant image workbench. The interface is Chinese-first, for creators who iterate on prompts, reference images and saved results. Existing custom site names and icons are retained from the server.
+Bimage is an independent multi-tenant image workbench for creators who iterate on prompts, reference images and saved results. Its interface defaults to Simplified Chinese and can switch to English without resetting the current workspace. Existing custom site names and icons are retained from the server.
 
 ## Product boundaries
 - Task-first workbench, not an Agent, canvas product or marketing landing page.

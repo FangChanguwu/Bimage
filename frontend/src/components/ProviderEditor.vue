@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, useId } from "vue";
+import { t } from '../i18n';
 import { Search, Save } from "lucide-vue-next";
 import Modal from "./Modal.vue";
 import type { ProviderDraft, Provider, Model, Api, Run } from "../types";
@@ -73,12 +74,12 @@ async function save() {
 </script>
 
 <template>
-  <Modal :title="provider ? '编辑供应商' : '添加供应商'" :locked="!!pending" @close="emit('cancel')">
+  <Modal :title="t(provider ? '编辑供应商' : '添加供应商')" :locked="!!pending" @close="emit('cancel')">
     <form class="provider-form" @submit.prevent="save">
       <div class="field-grid">
         <label>
-          名称
-          <input v-model="draft.name" name="name" required maxlength="100" :disabled="!!pending" placeholder="例如：我的图像服务" />
+          {{ t('名称') }}
+          <input v-model="draft.name" name="name" required maxlength="100" :disabled="!!pending" :placeholder="t('例如：我的图像服务')" />
         </label>
         <label>
           Base URL
@@ -86,19 +87,19 @@ async function save() {
         </label>
       </div>
       <label>
-        {{ provider ? "新 API Key（留空保持原值）" : "API Key" }}
-        <input v-model="draft.apiKey" name="apiKey" type="password" autocomplete="new-password" :disabled="!!pending" placeholder="请输入API Key" />
+        {{ t(provider ? "新 API Key（留空保持原值）" : "API Key") }}
+        <input v-model="draft.apiKey" name="apiKey" type="password" autocomplete="new-password" :disabled="!!pending" :placeholder="t('请输入API Key')" />
       </label>
       <div class="switch-row">
         <div>
-          <strong>开放 / 共享</strong>
-          <small :id="`${labelId}-sharing`">设置为共享将让此供应商配置被所有用户可见并使用。</small>
+          <strong>{{ t('开放 / 共享') }}</strong>
+          <small :id="`${labelId}-sharing`">{{ t('设置为共享将让此供应商配置被所有用户可见并使用。') }}</small>
         </div>
         <button
           type="button"
           class="switch"
           role="switch"
-          aria-label="开放共享供应商"
+          :aria-label="t('开放共享供应商')"
           :aria-describedby="`${labelId}-sharing`"
           :aria-checked="draft.shared"
           :disabled="!!pending"
@@ -107,21 +108,21 @@ async function save() {
       </div>
       <section class="provider-models" :aria-labelledby="`${labelId}-catalog`">
         <div class="provider-models-head">
-          <h3 :id="`${labelId}-catalog`">模型目录 <small v-if="draft.models.length">{{ draft.models.length }} 个</small></h3>
+          <h3 :id="`${labelId}-catalog`">{{ t('模型目录') }} <small v-if="draft.models.length">{{ t('{count} 个', { count: draft.models.length }) }}</small></h3>
           <button type="button" :disabled="!!pending || !draft.baseUrl" @click="discover">
-            <Search :size="16" />{{ pending === 'discover' ? "获取中…" : "获取模型" }}
+            <Search :size="16" />{{ t(pending === 'discover' ? "获取中…" : "获取模型") }}
           </button>
         </div>
         <ul v-if="draft.models.length" class="model-catalog">
           <li v-for="(model, index) in draft.models" :key="model.id" class="catalog-row">
             <strong>{{ model.id }}</strong>
             <div class="catalog-purpose">
-              <span :id="`${labelId}-purpose-${index}`">{{ model.types.includes('image') ? '图像' : '文本' }}</span>
+              <span :id="`${labelId}-purpose-${index}`">{{ t(model.types.includes('image') ? '图像' : '文本') }}</span>
               <button
                 type="button"
                 class="switch"
                 role="switch"
-                :aria-label="`${model.id} 用途`"
+                :aria-label="t('{model} 用途', { model: model.id })"
                 :aria-describedby="`${labelId}-purpose-${index}`"
                 :aria-checked="model.types.includes('image')"
                 :disabled="!!pending"
@@ -132,9 +133,9 @@ async function save() {
         </ul>
       </section>
       <footer class="form-footer">
-        <button type="button" :disabled="!!pending" @click="emit('cancel')">取消</button>
+        <button type="button" :disabled="!!pending" @click="emit('cancel')">{{ t('取消') }}</button>
         <button type="submit" class="primary" :disabled="!!pending">
-          <Save :size="16" />{{ pending === 'save' ? "保存中…" : provider ? "保存修改" : "保存供应商" }}
+          <Save :size="16" />{{ t(pending === 'save' ? "保存中…" : provider ? "保存修改" : "保存供应商") }}
         </button>
       </footer>
     </form>

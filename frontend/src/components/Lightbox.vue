@@ -5,6 +5,7 @@ import Modal from "./Modal.vue";
 import AssetImage from "./AssetImage.vue";
 import { download, copyImage } from "../composables/assetCache";
 import type { Run, Point } from "../types";
+import { t } from "../i18n";
 const props = defineProps<{
   asset: string;
   signal: AbortSignal;
@@ -62,20 +63,20 @@ function up(e: PointerEvent) {
 }
 </script>
 <template>
-  <Modal title="图片预览" wide @close="emit('close')"
+  <Modal :title="t('图片预览')" wide @close="emit('close')"
     ><div class="preview-toolbar">
-      <button class="icon-button" aria-label="缩小" @click="scale(zoom / 1.25)">
+      <button class="icon-button" :aria-label="t('缩小')" @click="scale(zoom / 1.25)">
         <ZoomOut :size="18" /></button
       ><button
         class="icon-button"
-        aria-label="放大"
+        :aria-label="t('放大')"
         @click="scale(zoom * 1.25)"
       >
         <ZoomIn :size="18" /></button
-      ><button aria-label="复位" @click="reset">
+      ><button :aria-label="t('复位')" @click="reset">
         <RotateCcw :size="16" />{{ Math.round(zoom * 100) }}%</button
-      ><button @click="run(() => copyImage(asset, signal), '复制成功')">
-        <Copy :size="16" />复制</button
+      ><button @click="run(() => copyImage(asset, signal), t('复制成功'))">
+        <Copy :size="16" />{{ t('复制') }}</button
       ><button
         @click="
           run(() =>
@@ -87,7 +88,7 @@ function up(e: PointerEvent) {
           )
         "
       >
-        <Download :size="16" />下载原图
+        <Download :size="16" />{{ t('下载原图') }}
       </button>
     </div>
     <div
@@ -101,7 +102,7 @@ function up(e: PointerEvent) {
       <AssetImage
         :asset="asset"
         :signal="signal"
-        alt="预览原图"
+        :alt="t('预览原图')"
         original
         :style="{
           transform: `translate(${pan.x}px,${pan.y}px) scale(${zoom})`,
@@ -109,7 +110,7 @@ function up(e: PointerEvent) {
       />
     </div>
     <p class="muted preview-help">
-      滚轮或双指缩放 · 拖动查看 · Esc 关闭
+      {{ t('滚轮或双指缩放 · 拖动查看 · Esc 关闭') }}
     </p></Modal
   >
 </template>

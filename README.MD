@@ -10,7 +10,7 @@
 
 **English** · [简体中文](README_CN.MD)
 
-![Version](https://img.shields.io/badge/version-0.2.1-blue)
+![Version](https://img.shields.io/badge/version-0.3.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 </div>
@@ -19,7 +19,7 @@
 
 Connect your own OpenAI-compatible provider to generate images, edit them with references, and refine prompts. The workbench lets you queue jobs, search past prompts, and download the original images without leaving the page.
 
-![Bimage desktop workbench with a prompt editor and generation settings on the left, and job history with image previews on the right](docs/preview.png)
+![English Bimage workbench with creation settings on the left and task history on the right](docs/preview-en.png)
 
 ## Features
 
@@ -29,6 +29,13 @@ Connect your own OpenAI-compatible provider to generate images, edit them with r
 - **Revisit past work.** Search all prompts, load history in pages, restore job settings, and download originals individually or as a ZIP archive.
 - **Load images efficiently.** Server-generated previews and account-scoped browser caching reduce repeated transfers. Clear local images in Settings; logout clears private cached data.
 - **Manage workspaces.** Sign in with an account, share providers, and customize site branding. Administrators can create users and set their image-generation concurrency limits.
+- **Switch languages.** Choose English or Simplified Chinese on the sign-in page or in the workbench sidebar. Bimage remembers your choice in the browser and keeps your current draft when you switch.
+
+## Prompt optimization
+
+Choose **Optimize** in the prompt editor to send the current prompt and any attached references to your configured text model. Bimage highlights additions and strikes through removals right in the editor. Edit the suggestion before choosing **Apply**, or choose **Cancel** to keep the original. Reviewing a suggestion does not queue an image job.
+
+![English prompt optimization review showing highlighted additions, struck-through removals, and Cancel and Apply buttons](docs/prompt-refinement-en.png)
 
 ## Tech stack
 
@@ -65,7 +72,7 @@ npm --prefix frontend run dev
 
 Open [http://127.0.0.1:5178](http://127.0.0.1:5178). For first-time setup, read the one-time code from `data/setup-code.txt` on the server and set your own password for `admin` in the web UI.
 
-Sign in, go to System Settings (系统设置), and add an OpenAI-compatible provider. In the Providers tab, choose independent defaults for image generation, quick prompts, and prompt optimization. You can skip text models if you only need image generation.
+Sign in, open **Settings**, and add an OpenAI-compatible provider. In the Providers tab, choose independent defaults for image generation, quick prompts, and prompt optimization. You can skip text models if you only need image generation.
 
 ## Deployment
 

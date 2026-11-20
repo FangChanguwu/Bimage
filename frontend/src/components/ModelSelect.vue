@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import SelectControl from "./SelectControl.vue";
+import { t } from "../i18n";
 import type { Provider } from "../types";
 const props = defineProps<{
   providers: Provider[];
@@ -35,6 +36,6 @@ function change(v: string) {
 </script>
 <template>
   <SelectControl :label="label" :model-value="value"
-    :options="[{ value: '', label: '选择模型' }, ...items, ...(value && !items.some(i => i.value === value) ? [{ value, label: model || '', secondary: '历史模型' }] : [])]"
+    :options="[{ value: '', label: t('选择模型') }, ...items, ...(value && !items.some(i => i.value === value) ? [{ value, label: model || '', secondary: t('历史模型') }] : [])]"
     @update:model-value="change" />
 </template>

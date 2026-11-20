@@ -4,6 +4,8 @@ import { Moon, Sun } from "lucide-vue-next";
 import { useSession } from "./composables/useSession";
 import Workspace from "./components/Workspace.vue";
 import AuthForm from "./components/AuthForm.vue";
+import LanguageSwitch from './components/LanguageSwitch.vue';
+import { t, locale } from './i18n';
 import ToastNotice, { type Notice } from './components/ToastNotice.vue';
 import { version } from '../package.json';
 import type { Site } from "./types";
@@ -31,9 +33,9 @@ function updateSite(s: Site) {
   if (icon) icon.href = s.icon || "/Bimage.png";
 }
 watch(
-  [site, identity, setupRequired],
+  [site, identity, setupRequired, locale],
   () => {
-    if (!identity.value) document.title = `${site.value.title || "Bimage"} | ${setupRequired.value ? "初始化管理员" : "登录"}`;
+    if (!identity.value) document.title = `${site.value.title || "Bimage"} | ${t(setupRequired.value ? "初始化管理员" : "登录")}`;
   },
   { immediate: true },
 );
@@ -104,16 +106,17 @@ async function logout() {
     @site="updateSite"
   />
   <main v-else class="login" :class="{ 'login-setup': setupRequired }">
+    <LanguageSwitch placement="login" />
     <button
       class="icon-button login-theme"
-      aria-label="切换主题"
+      :aria-label="t('切换主题')"
       @click="theme = theme === 'light' ? 'dark' : 'light'"
     >
       <Moon v-if="theme === 'light'" :size="20" /><Sun
         v-else
         :size="20"
       /></button
-    ><img class="login-logo" :src="site.icon || '/Bimage.png'" alt="站点图标" />
+    ><img class="login-logo" :src="site.icon || '/Bimage.png'" :alt="t('站点图标')" />
     <div class="login-brand">
       <h1>{{ site.title || "Bimage" }}</h1>
       <small class="login-version">v{{ version }}</small>
@@ -128,10 +131,10 @@ async function logout() {
       @edit="notice = ''"
     />
     <div v-else-if="setupError" class="login-status">
-      <p role="alert">{{ setupError }}</p>
-      <button type="button" @click="checkSetup">重试</button>
+      <p role="alert">{{ t(setupError) }}</p>
+      <button type="button" @click="checkSetup">{{ t('重试') }}</button>
     </div>
-    <p v-else class="muted" role="status">正在连接…</p>
+    <p v-else class="muted" role="status">{{ t('正在连接…') }}</p>
   </main>
   <ToastNotice :notice="warning" @close="warning = null" />
 </template>

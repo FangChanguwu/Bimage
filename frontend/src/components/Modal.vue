@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, useId } from "vue";
 import { X } from "lucide-vue-next";
+import { t } from "../i18n";
 const props = defineProps<{ title: string; wide?: boolean; locked?: boolean }>();
 const emit = defineEmits<{ close: [] }>();
 const dialog = ref<HTMLDialogElement>();
@@ -41,7 +42,7 @@ onBeforeUnmount(() => {
           <h2 :id="heading">{{ title }}</h2>
           <button
             class="icon-button"
-            aria-label="关闭弹窗"
+            :aria-label="t('关闭弹窗')"
             :disabled="locked"
             @click="close"
           >

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref } from "vue";
+import { t } from '../i18n';
 import { resolveTextDefaults } from "../composables/textDefaults";
 import { Plus, Server, LockKeyhole } from "lucide-vue-next";
 import ProviderEditor from "./ProviderEditor.vue";
@@ -70,7 +71,7 @@ async function remove() {
 }
 </script>
 <template>
-  <div class="settings-tabs" role="tablist" aria-label="设置分类">
+  <div class="settings-tabs" role="tablist" :aria-label="t('设置分类')">
     <button
       v-for="item in [
         { id: 'providers', label: '供应商' },
@@ -83,21 +84,21 @@ async function remove() {
       :class="{ selected: tab === item.id }"
       @click="tab = item.id"
     >
-      {{ item.label }}
+      {{ t(item.label) }}
     </button>
   </div>
   <div v-if="tab === 'providers'" class="provider-settings">
     <section class="panel settings-section">
       <div class="section-head">
-        <h2>已连接的供应商</h2>
+        <h2>{{ t('已连接的供应商') }}</h2>
         <button class="primary" @click="adding = true">
-          <Plus :size="16" />添加供应商
+          <Plus :size="16" />{{ t('添加供应商') }}
         </button>
       </div>
 
       <div v-if="!providers.length" class="inline-empty">
         <Server :size="28" />
-        <p>连接一个供应商，开始创作。</p>
+        <p>{{ t('连接一个供应商，开始创作。') }}</p>
       </div>
       <div
         v-for="provider in providers"
@@ -107,53 +108,53 @@ async function remove() {
         <div class="provider-info">
           <div class="provider-title">
             <strong>{{ provider.name }}</strong
-            ><span v-if="provider.shared" class="badge">共享</span
+            ><span v-if="provider.shared" class="badge">{{ t('共享') }}</span
             ><span v-if="!provider.canManage" class="badge neutral"
-              >只读目录</span
+              >{{ t('只读目录') }}</span
             >
           </div>
           <p v-if="provider.canManage && provider.baseUrl">{{ provider.baseUrl }}</p>
           <small
-            >{{ provider.models?.length || 0 }} 个模型 ·
+            >{{ t('{count} 个模型', { count: provider.models?.length || 0 }) }} ·
             {{
-              provider.canManage
+              t(provider.canManage
                 ? provider.hasKey ? "密钥已保存" : "无密钥"
-                : "由所有者管理"
+                : "由所有者管理")
             }}</small
           >
         </div>
         <div v-if="provider.canManage" class="actions">
-          <button @click="editing = provider">编辑</button
+          <button @click="editing = provider">{{ t('编辑') }}</button
           ><button class="danger-text" @click="deleting = provider">
-            删除
+            {{ t('删除') }}
           </button>
         </div>
         <LockKeyhole v-else :size="18" class="muted" />
       </div>
     </section>
     <section class="panel settings-section" aria-labelledby="model-defaults-title" :aria-busy="savingDefaults">
-      <h2 id="model-defaults-title">默认模型</h2>
-      <p class="muted">分别选择快速提示词、提示词优化和生图使用的模型。不会更改当前创作草稿。</p>
+      <h2 id="model-defaults-title">{{ t('默认模型') }}</h2>
+      <p class="muted">{{ t('分别选择快速提示词、提示词优化和生图使用的模型。不会更改当前创作草稿。') }}</p>
       <fieldset class="defaults-fields" :disabled="savingDefaults">
-        <label>快速提示词<ModelSelect
-          :providers="providers" kind="text" label="快速提示词"
+        <label>{{ t('快速提示词') }}<ModelSelect
+          :providers="providers" kind="text" :label="t('快速提示词')"
           :provider-id="defaults.quickProvider" :model="defaults.quickModel"
           @change="(p, m) => { defaults.quickProvider = p; defaults.quickModel = m; }"
         /></label>
-        <label>提示词优化<ModelSelect
-          :providers="providers" kind="text" label="提示词优化"
+        <label>{{ t('提示词优化') }}<ModelSelect
+          :providers="providers" kind="text" :label="t('提示词优化')"
           :provider-id="defaults.textProvider" :model="defaults.textModel"
           @change="(p, m) => { defaults.textProvider = p; defaults.textModel = m; }"
         /></label>
-        <label>生图模型<ModelSelect
-          :providers="providers" kind="image" label="生图模型"
+        <label>{{ t('生图模型') }}<ModelSelect
+          :providers="providers" kind="image" :label="t('生图模型')"
           :provider-id="defaults.imageProvider" :model="defaults.imageModel"
           @change="(p, m) => { defaults.imageProvider = p; defaults.imageModel = m; }"
         /></label>
       </fieldset>
       <footer class="form-footer">
-        <span role="status" aria-live="polite" aria-atomic="true" class="muted">{{ defaultsStatus }}</span>
-        <button type="button" class="primary" :disabled="savingDefaults" @click="saveDefaults">{{ savingDefaults ? '保存中…' : '保存默认模型' }}</button>
+        <span role="status" aria-live="polite" aria-atomic="true" class="muted">{{ t(defaultsStatus) }}</span>
+        <button type="button" class="primary" :disabled="savingDefaults" @click="saveDefaults">{{ t(savingDefaults ? '保存中…' : '保存默认模型') }}</button>
       </footer>
     </section>
   </div>
@@ -176,14 +177,11 @@ async function remove() {
     @saved="closeEditor(); emit('refresh')"
     @cancel="closeEditor"
   />
-  <Modal v-if="deleting" title="删除供应商" @close="deleting = null"
-    ><p>
-      删除
-      {{ deleting.name }}？已有历史保留，待执行任务将无法继续使用这个供应商。
-    </p>
+  <Modal v-if="deleting" :title="t('删除供应商')" @close="deleting = null"
+    ><p>{{ t('删除 {name}？已有历史保留，待执行任务将无法继续使用这个供应商。', { name: deleting.name }) }}</p>
     <footer class="form-footer">
-      <button @click="deleting = null">取消</button
-      ><button class="primary" @click="remove">确认删除</button>
+      <button @click="deleting = null">{{ t('取消') }}</button
+      ><button class="primary" @click="remove">{{ t('确认删除') }}</button>
     </footer></Modal
   >
 </template>

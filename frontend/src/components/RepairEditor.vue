@@ -6,6 +6,7 @@ import Modal from "./Modal.vue";
 import { assetCache } from "../composables/assetCache";
 import { repairPrompt, fileData } from "../domain";
 import type { Job, Shape, Tool, Point, Api } from "../types";
+import { t } from "../i18n";
 const props = defineProps<{ job: Job; signal: AbortSignal; api: Api }>();
 const emit = defineEmits<{ close: []; apply: [id: string, prompt: string] }>();
 const tasks = props.job.tasks.filter((t) => t.asset),
@@ -221,13 +222,13 @@ async function apply() {
 }
 </script>
 <template>
-  <Modal title="局部修复" wide @close="emit('close')"
+  <Modal :title="t('局部修复')" wide @close="emit('close')"
     ><p class="muted">
-      标注作为参考图提示，不是像素蒙版硬约束。确认只回填草稿，不会生成或扣费。
+      {{ t('标注作为参考图提示，不是像素蒙版硬约束。确认只回填草稿，不会生成或扣费。') }}
     </p>
     <label v-if="tasks.length > 1"
-      >选择输出图片<SelectControl v-model="asset" label="修复图片"
-        :options="tasks.map((task, i) => ({value: task.asset || '', label: `图片 ${i + 1}`}))" /></label
+      >{{ t('选择输出图片') }}<SelectControl v-model="asset" :label="t('修复图片')"
+        :options="tasks.map((task, i) => ({value: task.asset || '', label: t('图片 {number}', { number: i + 1 })}))" /></label
     >
     <div class="repair-toolbar">
       <button
@@ -236,23 +237,23 @@ async function apply() {
         :aria-pressed="tool === id"
         @click="tool = id"
       >
-        {{ name }}</button
+        {{ t(name) }}</button
       ><label class="repair-width"
-        >笔宽<input
+        >{{ t('笔宽') }}<input
           v-model.number="width"
-          aria-label="笔宽"
+          :aria-label="t('笔宽')"
           type="range"
           min="1"
           max="40"
         /><output>{{ width }}px</output></label
       ><button
-        aria-label="撤销"
+        :aria-label="t('撤销')"
         :disabled="!shapes.length || busy"
         @click="redo.push(shapes.pop()!)"
       >
         <Undo2 :size="16" /></button
       ><button
-        aria-label="重做"
+        :aria-label="t('重做')"
         :disabled="!redo.length || busy"
         @click="shapes.push(redo.pop()!)"
       >
@@ -264,7 +265,7 @@ async function apply() {
           redo = [];
         "
       >
-        <Eraser :size="16" />清空
+        <Eraser :size="16" />{{ t('清空') }}
       </button>
     </div>
     <div class="repair-colors">
@@ -276,12 +277,12 @@ async function apply() {
         :style="{ background: c }"
         @click="color = c"
       /><code>{{ color }}</code
-      ><input v-model="color" type="color" aria-label="自定义颜色" />
+      ><input v-model="color" type="color" :aria-label="t('自定义颜色')" />
     </div>
     <div class="repair-stage" :data-annotation-count="shapes.length">
       <canvas
         ref="canvas"
-        aria-label="标注画布"
+        :aria-label="t('标注画布')"
         @pointerdown="down"
         @pointermove="move"
         @pointerup="finish"
@@ -289,19 +290,19 @@ async function apply() {
       />
     </div>
     <label
-      >修改需求<textarea
+      >{{ t('修改需求') }}<textarea
         v-model="need"
-        aria-label="修改需求"
+        :aria-label="t('修改需求')"
         rows="3"
         maxlength="8000"
-        placeholder="说明标注范围内需要如何修改，支持多行…"
+        :placeholder="t('说明标注范围内需要如何修改，支持多行…')"
       />
     </label>
-    <p v-if="error" role="alert" class="error-message">{{ error }}</p>
+    <p v-if="error" role="alert" class="error-message">{{ t(error) }}</p>
     <footer class="form-footer">
-      <button @click="emit('close')">取消</button
+      <button @click="emit('close')">{{ t('取消') }}</button
       ><button class="primary" :disabled="busy || !ready" @click="apply">
-        {{ busy ? "正在保存…" : "确认回填" }}
+        {{ t(busy ? '正在保存…' : '确认回填') }}
       </button>
     </footer></Modal
   >
