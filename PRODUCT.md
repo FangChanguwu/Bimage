@@ -7,7 +7,7 @@ Bimage is an independent multi-tenant image workbench. The interface is Chinese-
 - OpenAI-compatible providers and API keys are managed through the backend; secrets are never read back into the browser.
 - Tenant-scoped persisted forms, provider catalogs/defaults, image tasks and originals. Explicit submission is the only generation action; retry and repair only refill drafts.
 - Reference and vision workflows share a maximum of 16 images. Uploads support PNG/JPEG/WebP and reject files over 8 MiB. Vision aggregate limits are enforced by the API.
-- Administrators manage site branding, ordinary member keys and deliberate administrator key rotation; never a second administrator.
+- Administrators manage site branding and create email/password accounts with a role and per-account image-generation concurrency limit. The initial `admin` chooses their password using a server-held, single-use setup code; there is no public self-registration.
 - Actual output dimensions come from backend byte inspection, never request estimates. Unknown dimensions remain unknown.
 - Default sizing is automatic, omitting upstream size, ratio and resolution fields. Legacy manual forms remain restorable.
 

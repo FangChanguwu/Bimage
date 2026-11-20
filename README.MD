@@ -6,7 +6,7 @@
 
 **English** · [简体中文](README_CN.MD)
 
-![Version](https://img.shields.io/badge/version-0.1.0-blue)
+![Version](https://img.shields.io/badge/version-0.2.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 </div>
@@ -22,8 +22,9 @@ Connect your own OpenAI-compatible provider to generate images, edit them with r
 - **Generate and edit images.** Use text or up to 16 reference images. Let the model pick the image dimensions, or set them yourself. Export as PNG, JPEG, or WebP.
 - **Refine prompts.** Draft a prompt from a short brief or review suggested edits character by character before applying them.
 - **Keep track of jobs.** Bimage saves progress and sends a separate request for each image. Cancel images that are still queued without interrupting those already in progress.
-- **Revisit past work.** Search by prompt, restore job settings, and download originals individually or as a ZIP archive.
-- **Manage workspaces.** Sign in with an access key, share providers, and customize site branding. The interface adapts to smaller screens and supports light and dark themes.
+- **Revisit past work.** Search all prompts, load history in pages, restore job settings, and download originals individually or as a ZIP archive.
+- **Load images efficiently.** Server-generated previews and account-scoped browser caching reduce repeated transfers. Clear local images in Settings; logout clears private cached data.
+- **Manage workspaces.** Sign in with an account, share providers, and customize site branding. Administrators can create users and set their image-generation concurrency limits.
 
 ## Tech stack
 
@@ -58,9 +59,9 @@ In a second terminal, open the repository directory and start the frontend:
 npm --prefix frontend run dev
 ```
 
-Open [http://127.0.0.1:5178](http://127.0.0.1:5178). On first startup, Bimage writes the initial administrator access key to `data/admin-key.txt`.
+Open [http://127.0.0.1:5178](http://127.0.0.1:5178). For first-time setup, read the one-time code from `data/setup-code.txt` on the server and set your own password for `admin` in the web UI.
 
-Sign in, go to Settings (设置), and add an OpenAI-compatible provider. Select an image model for generation and a text model for prompt refinement. You can skip the text model if you only need image generation.
+Sign in, go to System Settings (系统设置), and add an OpenAI-compatible provider. In the Providers tab, choose independent defaults for image generation, quick prompts, and prompt optimization. You can skip text models if you only need image generation.
 
 ## Deployment
 
@@ -73,7 +74,7 @@ cp .env.example .env
 docker compose up -d --build --wait
 ```
 
-The workbench is available at [http://localhost:6767](http://localhost:6767) by default. Compose does not publish a separate API port. On first startup, read the initial administrator access key from `data/admin-key.txt` in the mounted data directory.
+The workbench is available at [http://localhost:6767](http://localhost:6767) by default. Compose does not publish a separate API port. Use the same one-time setup flow; for public deployments, use HTTPS and keep the upstream port private.
 
 ### Environment variables
 

@@ -3,12 +3,14 @@ import type { Api, Settings } from "../types";
 
 export const PROMPT_LIMIT = 16000;
 
-export async function rewritePrompt(api: Api, settings: Pick<Settings, "textProvider" | "textModel">, prompt: string, references: readonly string[], signal: AbortSignal) {
-  if (!settings.textProvider || !settings.textModel)
-    throw Error("请先在设置中配置默认文本模型");
+export async function rewritePrompt(api: Api, settings: Pick<Settings, "textProvider" | "textModel" | "quickProvider" | "quickModel">, prompt: string, references: readonly string[], signal: AbortSignal, purpose: "optimization" | "quick" = "optimization") {
+  const providerId = purpose === "quick" ? settings.quickProvider : settings.textProvider;
+  const model = purpose === "quick" ? settings.quickModel : settings.textModel;
+  if (!providerId || !model)
+    throw Error(purpose === "quick" ? "请先在供应商设置中配置快速提示词模型" : "请先在供应商设置中配置提示词优化的默认文本模型");
   const response = await api<{ text: string }>(
     "/rewrite",
-    { providerId: settings.textProvider, model: settings.textModel, prompt, references: [...references] },
+    { providerId, model, prompt, references: [...references] },
     undefined,
     signal,
   );

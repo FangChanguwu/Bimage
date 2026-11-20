@@ -3,11 +3,12 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { createApp } from "../dist/app.js";
 
 test("additive migration upgrades original SQLite columns without replacing stored records", async () => {
-  const dir = mkdtempSync(path.join(process.env.TMPDIR, "bimage-schema-"));
+  const dir = mkdtempSync(path.join(tmpdir(), "bimage-schema-"));
   const legacy = new DatabaseSync(path.join(dir, "studio.sqlite"));
   legacy.exec(`
     CREATE TABLE keys(id TEXT PRIMARY KEY,hash TEXT UNIQUE,name TEXT,role TEXT,disabled INTEGER DEFAULT 0,expires TEXT);
@@ -49,22 +50,21 @@ test("additive migration upgrades original SQLite columns without replacing stor
       "original-job",
       "stable-owner",
       '{"references":["original-asset"],"prompt":"saved"}',
-      "running",
+      "interrupted",
       "2025-01-01",
     );
   legacy
     .prepare("INSERT INTO tasks(id,job,status) VALUES(?,?,?)")
-    .run("original-task", "original-job", "running");
+    .run("original-task", "original-job", "interrupted");
   legacy.close();
   const service = await createApp({
     dir,
     worker: false,
-    adminKey: "do-not-reset",
   });
   try {
     assert.equal(
-      service.db.prepare("SELECT hash FROM keys").get().hash,
-      digest,
+      service.db.prepare("SELECT count(*) AS n FROM accounts").get().n,
+      0,
     );
     assert.equal(
       service.db.prepare("SELECT id FROM keys").get().id,

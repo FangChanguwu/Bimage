@@ -1,0 +1,102 @@
+import { chromium, expect } from '@playwright/test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { createApp } from '../backend/dist/app.js';
+
+import { serveFrontend } from './frontend-server.js';
+import { setupAccount, createAccount } from './account-fixture.js';
+
+const dir = mkdtempSync(path.join(tmpdir(), 'bimage-perf-'));
+const app = await createApp({ dir, worker: false });
+const server = app.app.listen(0, '127.0.0.1');
+await new Promise(r => server.once('listening', r));
+const front = await serveFrontend(server);
+const base = `http://127.0.0.1:${front.address().port}`;
+const browser = await chromium.launch({ args: ['--no-sandbox'] });
+const ctx = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+const page = await ctx.newPage();
+page.setDefaultTimeout(10000);
+const password = 'perf-fixture-only';
+const requests = [], errors = [];
+page.on('request', r => { const u = new URL(r.url()); if (u.pathname.startsWith('/api/')) requests.push({ method:r.method(), path:u.pathname, variant:u.searchParams.get('variant'), url:r.url() }); });
+page.on('pageerror', e => errors.push(e.message));
+const pass = s => console.log('PASS '+s);
+try {
+  const admin = await setupAccount(base, dir, password);
+  await createAccount(base, admin.headers, { email:'perf@example.test', password, role:'user', concurrency:1 });
+  await page.goto(base);
+  await page.getByLabel('邮箱',{exact:true}).fill('admin');
+  await page.getByLabel('密码',{exact:true}).fill(password);
+  await page.getByRole('button',{name:'登录',exact:true}).click();
+  await expect(page.getByRole('heading',{name:'图像工作台',exact:true})).toBeVisible();
+  const png = await page.evaluate(() => { const c=document.createElement('canvas'); c.width=1600;c.height=1000; const x=c.getContext('2d'); x.fillStyle='#8678b6'; x.fillRect(0,0,c.width,c.height); return c.toDataURL('image/png').split(',')[1]; });
+  // Seed isolated, non-generating history. No production data or paid upstream.
+  const bytes=Buffer.from(png,'base64');
+  const id='perf-original';
+  app.db.prepare('INSERT INTO assets(id,owner,mime,bytes,width,height) VALUES(?,?,?,?,?,?)').run(id,admin.identity.id,'image/png',bytes,1600,1000);
+  const form={providerId:'p',model:'test-image',prompt:'',count:1,autoSize:true,size:'1024x1024',ratio:'1:1',resolution:'1K',quality:'auto',output_format:'png',references:[]};
+  for(let i=0;i<65;i++) {
+    const created=new Date(Date.UTC(2026,0,1,0,0,i)).toISOString();
+    app.db.prepare('INSERT INTO jobs(id,owner,form,status,created) VALUES(?,?,?,?,?)').run('perf-'+i,admin.identity.id,JSON.stringify({...form,prompt:i===0?'oldest unique\nneedle性能':`perf prompt ${i}`}),i===64?'succeeded':'failed',created);
+    app.db.prepare('INSERT INTO tasks(id,job,status,asset) VALUES(?,?,?,?)').run('task-'+i,'perf-'+i,i===64?'succeeded':'failed',i===64?id:null);
+  }
+  await page.reload();
+  const image=page.locator('.result-images img').first();
+  await expect(image).toBeVisible();
+  await expect.poll(()=>image.evaluate(e=>e.naturalWidth)).toBeGreaterThan(0);
+  assert(requests.some(r=>r.method==='GET'&&r.path==='/api/assets/'+id&&r.variant==='thumbnail'));
+  assert(!requests.some(r=>r.method==='GET'&&r.path==='/api/assets/'+id&&!r.variant));
+  assert(await page.locator('article.job').count()<=30);
+  pass('cold history uses server thumbnails, not original bytes, and bounded first page');
+  const thumbGets=()=>requests.filter(r=>r.method==='GET'&&r.path==='/api/assets/'+id&&r.variant==='thumbnail').length;
+  const before=thumbGets();
+  await page.reload();
+  await expect.poll(()=>page.locator('.result-images img').first().evaluate(e=>e.naturalWidth)).toBeGreaterThan(0);
+  assert.equal(thumbGets(),before);
+  assert(requests.some(r=>r.method==='HEAD'&&r.path==='/api/assets/'+id));
+  pass('reload reuses persisted thumbnail body with authorization HEAD');
+  await page.getByRole('button',{name:/加载更多/}).click();
+  await expect.poll(()=>page.locator('article.job').count()).toBeGreaterThan(30);
+  await page.getByRole('searchbox',{name:'搜索任务提示词'}).fill('needle性能');
+  await expect(page.locator('article.job')).toHaveCount(1);
+  await expect(page.locator('article.job')).toContainText('oldest unique');
+  pass('history load-more and full-history multiline search');
+  await page.getByRole('button',{name:'清除搜索',exact:true}).click();
+  await expect(page.locator('.result-images img').first()).toBeVisible();
+  const historyReads=()=>requests.filter(r=>r.method==='GET'&&r.path==='/api/jobs').length;
+  const count=historyReads();
+  await page.waitForTimeout(5000);
+  assert.equal(historyReads(),count);
+  pass('idle history no longer polls every 2.2 seconds');
+  await page.getByRole('button',{name:'系统设置',exact:true}).click();
+  await page.getByRole('tab',{name:'本地缓存',exact:true}).click();
+  await expect(page.getByRole('region',{name:'本地图片缓存'})).toBeVisible();
+  await page.getByRole('button',{name:'清除图片缓存',exact:true}).click();
+  await expect(page.getByText(/已使用 0.0 MB · 0 项/)).toBeVisible();
+  const cleared=thumbGets();
+  await page.getByRole('button',{name:'图像工作台',exact:true}).click();
+  await expect.poll(()=>thumbGets()).toBeGreaterThan(cleared);
+  pass('cache settings clears browser bytes without deleting server images');
+  // A deleted original must not reappear from IndexedDB after reload.
+  app.db.prepare('UPDATE tasks SET asset=NULL WHERE asset=?').run(id);
+  app.db.prepare('DELETE FROM assets WHERE id=?').run(id);
+  await page.reload();
+  await expect(page.locator('.result-images img')).toHaveCount(0);
+  pass('deleted assets do not reappear on reload');
+  await page.getByRole('button',{name:'退出登录',exact:true}).click();
+  await expect(page.getByRole('heading',{name:'登录',exact:true})).toBeVisible();
+  await page.getByLabel('邮箱',{exact:true}).fill('perf@example.test');
+  await page.getByLabel('密码',{exact:true}).fill(password);
+  await page.getByRole('button',{name:'登录',exact:true}).click();
+  await expect(page.getByRole('heading',{name:'暂无任务记录'})).toBeVisible();
+  assert.equal(await page.locator('.result-images img').count(),0);
+  assert.deepEqual(errors,[]);
+  pass('logout and member login do not expose cached previous-account images');
+  console.log('PERFORMANCE SMOKE: zero paid calls');
+} finally {
+  await ctx.close();await browser.close();
+  await new Promise(r=>front.close(r));await new Promise(r=>server.close(r));
+  await app.close();rmSync(dir,{recursive:true,force:true});
+}

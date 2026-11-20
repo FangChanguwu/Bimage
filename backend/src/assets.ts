@@ -4,6 +4,7 @@ import type { Express } from "express";
 import { Store } from "./db.js";
 import { body, fail, param, user } from "./http.js";
 import type { AssetRow } from "./types.js";
+import { Thumbnails } from "./thumbnails.js";
 
 export function imageType(bytes: Uint8Array, mime: string): boolean {
   const buffer = Buffer.from(bytes);
@@ -29,7 +30,10 @@ export function detectMime(bytes: Uint8Array): string | undefined {
   );
 }
 export class Assets {
-  constructor(private store: Store) {}
+  private thumbnails: Thumbnails;
+  constructor(private store: Store) {
+    this.thumbnails = new Thumbnails(store);
+  }
   owned(id: unknown, owner: string): AssetRow {
     if (typeof id !== "string") throw fail(400, "参考图参数无效");
     const asset = this.store.get<AssetRow>(
@@ -82,6 +86,8 @@ export class Assets {
       bytes,
     );
     this.measure({ id, bytes });
+    // Derived previews must never turn a successful original save into a failure.
+    void this.thumbnails.get(id).catch(() => {});
     return id;
   }
   mount(app: Express): void {
@@ -113,18 +119,40 @@ export class Assets {
       const id = existing?.id ?? this.save(owner, bytes, mime);
       response.json({ id, url: "/api/assets/" + id });
     });
-    app.get("/api/assets/:id", (request, response) => {
-      const asset = this.store.get<AssetRow>(
-        "SELECT * FROM assets WHERE id=?",
+    // Express otherwise dispatches HEAD through GET and reads/decodes the body.
+    app.head("/api/assets/:id", (request, response) => {
+      response.set("Cache-Control", "private, no-store");
+      const asset = this.store.get<Pick<AssetRow, "id" | "owner" | "mime">>(
+        "SELECT id,owner,mime FROM assets WHERE id=?",
         param(request),
       );
       const identity = user(request);
       if (!asset || (asset.owner !== identity.id && identity.role !== "admin"))
         throw fail(404, "图片不存在");
       response
-        .set("Cache-Control", "private, no-store")
-        .type(asset.mime)
-        .send(Buffer.from(asset.bytes));
+        .type(request.query.variant === "thumbnail" ? "image/webp" : asset.mime)
+        .status(200)
+        .end();
+    });
+    app.get("/api/assets/:id", async (request, response) => {
+      response.set("Cache-Control", "private, no-store");
+      const asset = this.store.get<Pick<AssetRow, "id" | "owner" | "mime">>(
+        "SELECT id,owner,mime FROM assets WHERE id=?",
+        param(request),
+      );
+      const identity = user(request);
+      if (!asset || (asset.owner !== identity.id && identity.role !== "admin"))
+        throw fail(404, "图片不存在");
+      if (request.query.variant === "thumbnail") {
+        response.type("image/webp").send(await this.thumbnails.get(asset.id));
+        return;
+      }
+      const source = this.store.get<{ bytes: Uint8Array }>(
+        "SELECT bytes FROM assets WHERE id=?",
+        asset.id,
+      );
+      if (!source) throw fail(404, "图片不存在");
+      response.type(asset.mime).send(Buffer.from(source.bytes));
     });
   }
 }

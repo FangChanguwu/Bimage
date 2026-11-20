@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { ref } from "vue";
-import { Plus, ExternalLink, Server, LockKeyhole } from "lucide-vue-next";
+import { resolveTextDefaults } from "../composables/textDefaults";
+import { Plus, Server, LockKeyhole } from "lucide-vue-next";
 import ProviderEditor from "./ProviderEditor.vue";
 import ModelSelect from "./ModelSelect.vue";
 import SiteSettings from "./SiteSettings.vue";
-import KeySettings from "./KeySettings.vue";
+import ImageCacheSettings from "./ImageCacheSettings.vue";
 import Modal from "./Modal.vue";
 import type { Provider, Settings, Site, Identity, Api, Run } from "../types";
 const props = defineProps<{
@@ -14,24 +15,48 @@ const props = defineProps<{
   identity: Identity;
   api: Api;
   run: Run;
+  signal: AbortSignal;
 }>();
 const emit = defineEmits<{
   refresh: [];
   settings: [settings: Settings];
   site: [site: Site];
-  csrf: [token: string];
 }>();
 const tab = ref("providers"),
   adding = ref(false),
   editing = ref<Provider | null>(null),
   deleting = ref<Provider | null>(null),
-  defaults = ref({ ...props.settings });
+  defaults = ref(modelDefaults()),
+  savingDefaults = ref(false),
+  defaultsStatus = ref("");
+function modelDefaults() {
+  const effective = resolveTextDefaults(props.providers, props.settings);
+  return { quickProvider: effective.quickProvider, quickModel: effective.quickModel,
+    textProvider: effective.textProvider, textModel: effective.textModel,
+    imageProvider: effective.imageProvider, imageModel: effective.imageModel };
+}
+function closeEditor() {
+  adding.value = false;
+  editing.value = null;
+}
 async function saveDefaults() {
-  await props.run(async () => {
-    await props.api("/settings", defaults.value, "PUT");
-    const result = await props.api<Settings>("/settings");
-    emit("settings", result);
-  }, "默认模型已保存");
+  if (savingDefaults.value) return;
+  savingDefaults.value = true;
+  defaultsStatus.value = "默认模型保存中…";
+  let saved = false;
+  try {
+    await props.run(async () => {
+      // The editor owns model choices only. Drafts and other settings may have
+      // changed since mount: never write a captured whole-settings snapshot.
+      await props.api("/settings", { ...props.settings, ...defaults.value }, "PUT");
+      const result = await props.api<Settings>("/settings");
+      emit("settings", result);
+      saved = true;
+    }, "默认模型已保存");
+  } finally {
+    savingDefaults.value = false;
+    defaultsStatus.value = saved ? "默认模型已保存" : "默认模型保存失败，请重试";
+  }
 }
 async function remove() {
   const p = deleting.value;
@@ -49,13 +74,8 @@ async function remove() {
     <button
       v-for="item in [
         { id: 'providers', label: '供应商' },
-        { id: 'defaults', label: '默认模型' },
-        ...(identity.role === 'admin'
-          ? [
-              { id: 'site', label: '站点样式' },
-              { id: 'keys', label: '密钥' },
-            ]
-          : []),
+        { id: 'cache', label: '本地缓存' },
+        ...(identity.role === 'admin' ? [{ id: 'site', label: '站点样式' }] : []),
       ]"
       :key="item.id"
       role="tab"
@@ -74,7 +94,7 @@ async function remove() {
           <Plus :size="16" />添加供应商
         </button>
       </div>
-      <p class="muted">OpenAI-compatible API · API Key 仅保存在服务端。</p>
+
       <div v-if="!providers.length" class="inline-empty">
         <Server :size="28" />
         <p>连接一个供应商，开始创作。</p>
@@ -92,15 +112,13 @@ async function remove() {
               >只读目录</span
             >
           </div>
-          <p v-if="provider.baseUrl">{{ provider.baseUrl }}</p>
+          <p v-if="provider.canManage && provider.baseUrl">{{ provider.baseUrl }}</p>
           <small
             >{{ provider.models?.length || 0 }} 个模型 ·
             {{
-              provider.hasKey
-                ? "密钥已保存"
-                : provider.canManage
-                  ? "无密钥"
-                  : "由所有者管理"
+              provider.canManage
+                ? provider.hasKey ? "密钥已保存" : "无密钥"
+                : "由所有者管理"
             }}</small
           >
         </div>
@@ -113,45 +131,34 @@ async function remove() {
         <LockKeyhole v-else :size="18" class="muted" />
       </div>
     </section>
-    <p class="settings-note">
-      <ExternalLink
-        :size="15"
-      />共享供应商仅提供固定配置的使用权；只有所有者或管理员能修改、刷新目录。
-    </p>
+    <section class="panel settings-section" aria-labelledby="model-defaults-title" :aria-busy="savingDefaults">
+      <h2 id="model-defaults-title">默认模型</h2>
+      <p class="muted">分别选择快速提示词、提示词优化和生图使用的模型。不会更改当前创作草稿。</p>
+      <fieldset class="defaults-fields" :disabled="savingDefaults">
+        <label>快速提示词<ModelSelect
+          :providers="providers" kind="text" label="快速提示词"
+          :provider-id="defaults.quickProvider" :model="defaults.quickModel"
+          @change="(p, m) => { defaults.quickProvider = p; defaults.quickModel = m; }"
+        /></label>
+        <label>提示词优化<ModelSelect
+          :providers="providers" kind="text" label="提示词优化"
+          :provider-id="defaults.textProvider" :model="defaults.textModel"
+          @change="(p, m) => { defaults.textProvider = p; defaults.textModel = m; }"
+        /></label>
+        <label>生图模型<ModelSelect
+          :providers="providers" kind="image" label="生图模型"
+          :provider-id="defaults.imageProvider" :model="defaults.imageModel"
+          @change="(p, m) => { defaults.imageProvider = p; defaults.imageModel = m; }"
+        /></label>
+      </fieldset>
+      <footer class="form-footer">
+        <span role="status" aria-live="polite" aria-atomic="true" class="muted">{{ defaultsStatus }}</span>
+        <button type="button" class="primary" :disabled="savingDefaults" @click="saveDefaults">{{ savingDefaults ? '保存中…' : '保存默认模型' }}</button>
+      </footer>
+    </section>
   </div>
-  <section v-if="tab === 'defaults'" class="panel settings-section">
-    <h2>默认模型</h2>
-    <p class="muted">从已连接和共享目录选择。用于新的创作和快速提示词。</p>
-    <label
-      >图像生成<ModelSelect
-        :providers="providers"
-        kind="image"
-        :provider-id="defaults.imageProvider"
-        :model="defaults.imageModel"
-        label="默认图像模型"
-        @change="
-          (p, m) => {
-            defaults.imageProvider = p;
-            defaults.imageModel = m;
-          }
-        " /></label
-    ><label
-      >提示词优化<ModelSelect
-        :providers="providers"
-        kind="text"
-        :provider-id="defaults.textProvider"
-        :model="defaults.textModel"
-        label="文本模型"
-        @change="
-          (p, m) => {
-            defaults.textProvider = p;
-            defaults.textModel = m;
-          }
-        "
-    /></label>
-    <footer class="form-footer">
-      <button class="primary" @click="saveDefaults">保存默认模型</button>
-    </footer>
+  <section v-if="tab === 'cache'" class="panel settings-section">
+    <ImageCacheSettings :signal="signal" />
   </section>
   <SiteSettings
     v-if="tab === 'site' && identity.role === 'admin'"
@@ -159,35 +166,17 @@ async function remove() {
     :api="api"
     :run="run"
     @saved="(s) => emit('site', s)"
-  /><KeySettings
-    v-if="tab === 'keys' && identity.role === 'admin'"
-    :identity="identity"
+  />
+  <ProviderEditor
+    v-if="adding || editing"
+    :key="editing?.id || 'new'"
+    :provider="editing || undefined"
     :api="api"
     :run="run"
-    @csrf="(t) => emit('csrf', t)"
-  /><Modal
-    v-if="adding || editing"
-    :title="editing ? '编辑供应商' : '添加供应商'"
-    @close="
-      adding = false;
-      editing = null;
-    "
-    ><ProviderEditor
-      :key="editing?.id || 'new'"
-      :provider="editing || undefined"
-      :admin="identity.role === 'admin'"
-      :api="api"
-      :run="run"
-      @saved="
-        adding = false;
-        editing = null;
-        emit('refresh');
-      "
-      @cancel="
-        adding = false;
-        editing = null;
-      " /></Modal
-  ><Modal v-if="deleting" title="删除供应商" @close="deleting = null"
+    @saved="closeEditor(); emit('refresh')"
+    @cancel="closeEditor"
+  />
+  <Modal v-if="deleting" title="删除供应商" @close="deleting = null"
     ><p>
       删除
       {{ deleting.name }}？已有历史保留，待执行任务将无法继续使用这个供应商。
@@ -198,3 +187,16 @@ async function remove() {
     </footer></Modal
   >
 </template>
+
+<style scoped>
+.provider-settings {
+  display: grid;
+  gap: 24px;
+}
+.defaults-fields {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+</style>

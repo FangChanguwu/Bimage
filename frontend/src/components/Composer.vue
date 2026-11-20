@@ -15,6 +15,7 @@ import ReferenceImages from "./ReferenceImages.vue";
 import { useReferences } from "../composables/useReferences";
 import { comparePrompts, composePrompt, editPromptReview, PROMPT_LIMIT, reviewText, rewritePrompt, type PromptRun } from "../composables/promptRewrite";
 import { dimensions } from "../domain";
+import { resolveTextDefaults } from "../composables/textDefaults";
 import type { GenerationForm, Provider, Api, Run, Settings } from "../types";
 const props = defineProps<{
   form: GenerationForm;
@@ -34,6 +35,7 @@ const file = ref<HTMLInputElement>();
 const promptInput = ref<HTMLTextAreaElement>();
 const highlight = ref<HTMLElement>();
 const optimizing = ref(false);
+const textDefaults = computed(() => resolveTextDefaults(props.providers, props.settings));
 const review = ref<readonly PromptRun[] | null>(null);
 const reviewValue = computed(() => review.value ? reviewText(review.value) : "");
 const revisedPrompt = computed(() => review.value ? composePrompt(review.value) : "");
@@ -137,7 +139,7 @@ async function optimize() {
   optimizing.value = true;
   try {
     await props.run(async () => {
-      const text = await rewritePrompt(props.api, props.settings, original, props.form.references, signal);
+      const text = await rewritePrompt(props.api, textDefaults.value, original, props.form.references, signal);
       if (request === controller) setReview(comparePrompts(original, text));
     });
   } finally {

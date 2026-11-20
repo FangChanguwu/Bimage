@@ -1,9 +1,11 @@
 import { ref, onScopeDispose } from "vue";
 import type { Api, Identity } from "../types";
 import { assetCache } from "./assetCache";
+import { clearAllPersistentAssets } from "./persistentAssets";
 
 const CHANGE_KEY = "bimage-session-change";
 const CHANNEL = "bimage-session";
+const PUBLIC_PATHS = new Set(["/login", "/setup", "/site"]);
 interface Lifetime {
   controller: AbortController;
   csrf: string;
@@ -23,6 +25,8 @@ export function useSession() {
     try { localStorage.setItem(CHANGE_KEY, `${Date.now()}:${Math.random()}`); } catch { /* storage may be disabled */ }
   }
   function invalidate(broadcast = false) {
+    // Explicit invalidation clears disk; ordinary scope disposal only revokes URLs.
+    void assetCache(life.controller.signal).clear();
     life.controller.abort();
     life = fresh();
     identity.value = null;
@@ -52,13 +56,15 @@ export function useSession() {
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     signal.throwIfAborted();
-    if (r.status === 401 && path !== "/login" && bound === life) {
+    if (r.status === 401 && path === "/me" && !bound.identity) void clearAllPersistentAssets();
+    if (r.status === 401 && !PUBLIC_PATHS.has(path) && bound === life && bound.identity) {
       invalidate(true);
       throw Error("会话已失效，请重新登录");
     }
-    const data = await r.json();
+    const data = await r.json().catch(() => null);
     signal.throwIfAborted();
-    if (!r.ok) throw Error(data.error || "请求失败，请重试");
+    if (!r.ok) throw Error(data?.error || "请求失败，请重试");
+    if (data === null) throw Error("服务器响应无效，请重试");
     return data as T;
   }
   async function verify(bound: Lifetime, afterResponse = false) {
@@ -85,7 +91,7 @@ export function useSession() {
   function bindApi(bound: Lifetime): Api {
     return async <T>(path: string, body?: unknown, method?: string, extra?: AbortSignal) => {
       bound.controller.signal.throwIfAborted();
-      const authenticated = path !== "/login" && path !== "/site" && path !== "/me";
+      const authenticated = !PUBLIC_PATHS.has(path) && path !== "/me";
       const verb = method || (body === undefined ? "GET" : "POST");
       // Reads are verified before exposing their result; mutations also verify
       // before sending and retain the lifetime's CSRF (never a future token).
@@ -95,8 +101,8 @@ export function useSession() {
       const result = await request<T>(bound, path, body, method, extra);
       // Cookie identity can change while the response is in flight. Do not expose
       // any tenant result to a component until the current cookie is verified.
-      // Rotation intentionally changes CSRF; its caller updates the bound token.
-      if (authenticated && path !== "/admin/rotate-key") await verify(bound, true);
+      if (authenticated) await verify(bound, true);
+      extra?.throwIfAborted();
       return result;
     };
   }
@@ -106,7 +112,7 @@ export function useSession() {
     bound.identity = m;
     assetCache(bound.controller.signal, () => {
       if (bound === life) invalidate(true);
-    });
+    }, { owner: m.id, verify: () => verify(bound, true) });
     identity.value = m;
   }
   async function restore() {
@@ -123,23 +129,26 @@ export function useSession() {
       ready.value = true;
     }
   }
-  async function login(key: string) {
+  async function authenticate(path: "/login" | "/setup", body: { password: string; login?: string; code?: string }) {
     if (authBusy || !ready.value) return;
     authBusy = true;
     // New credentials get a new lifetime: old callbacks keep an aborted API binding forever.
+    void assetCache(life.controller.signal).clear();
     life.controller.abort();
     life = fresh();
     const bound = life;
     pending.value = true;
     try {
-      adopt(bound, await request<Identity>(bound, "/login", { key }));
-      sessionStorage.removeItem("bimage-signed-out");
+      adopt(bound, await request<Identity>(bound, path, body));
+      try { sessionStorage.removeItem("bimage-signed-out"); } catch { /* the current session still works */ }
       announce();
     } finally {
       authBusy = false;
       pending.value = false;
     }
   }
+  const login = (login: string, password: string) => authenticate("/login", { login, password });
+  const setup = (code: string, password: string) => authenticate("/setup", { code, password });
   async function logout() {
     if (authBusy) return "";
     authBusy = true;
@@ -164,12 +173,7 @@ export function useSession() {
       pending.value = false;
     }
   }
-  function updateCsrf(token: string) {
-    life.csrf = token;
-    if (life.identity) life.identity.csrf = token;
-    if (identity.value) identity.value.csrf = token;
-    announce();
-  }
+
   function foreground() {
     if (!document.hidden && life.identity) void verify(life).catch(() => {});
   }
@@ -185,7 +189,7 @@ export function useSession() {
     document.removeEventListener("visibilitychange", foreground);
   });
   return {
-    identity, pending, ready, restore, login, logout, updateCsrf,
+    identity, pending, ready, restore, login, setup, logout,
     // Vue passes this stable, lifetime-bound function to the keyed tenant tree.
     // Never hand an old component a function that reads a future session's token.
     get api() { return bindApi(life); },

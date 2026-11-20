@@ -3,6 +3,7 @@ import "../../test/auth.test.js";
 import "../../test/admin-survival.test.js";
 import "../../test/admin-migration.test.js";
 import "../../test/provider.test.js";
+import "../../test/provider-public-only.test.js";
 import "../../test/draft-auth.test.js";
 import "../../test/mixed-models.test.js";
 import "../../test/queue.test.js";

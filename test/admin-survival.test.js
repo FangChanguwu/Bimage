@@ -1,36 +1,79 @@
-import { tmpdir } from 'node:os';
-import {test} from 'node:test';
+import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtempSync,rmSync} from 'node:fs';
-import path from 'node:path';
-import {createApp} from '../backend/dist/app.js';
-test('unique admin rotation is atomic, preserves owner and revokes old credentials',async()=>{
- const dir=mkdtempSync(path.join(tmpdir(),'unique-admin-'));const s=await createApp({dir,adminKey:'test-admin',worker:false});const server=s.app.listen(0,'127.0.0.1');await new Promise(r=>server.once('listening',r));const base=`http://127.0.0.1:${server.address().port}/api`;
- const call=async(p,body,method='POST',headers={authorization:'Bearer test-admin'})=>{const r=await fetch(base+p,{method,headers:{'content-type':'application/json',...headers},body:body===undefined?undefined:JSON.stringify(body)});return {status:r.status,data:await r.json(),cookie:r.headers.get('set-cookie')?.split(';')[0]};};
- try{
- const original=(await call('/me',undefined,'GET')).data;
- assert.equal((await call('/admin/keys',{name:'second',role:'admin'})).status,400);
- const user=(await call('/admin/keys',{name:'user'})).data;
- assert.equal((await call('/admin/keys/'+user.id,{role:'admin'},'PATCH')).status,400);
- for(const [method,body] of [['PATCH',{role:'user'}],['PATCH',{disabled:true}],['PATCH',{expires:new Date().toISOString()}],['DELETE',undefined]])assert.equal((await call('/admin/keys/'+original.id,body,method)).status,400);
- assert.throws(()=>s.db.prepare("UPDATE keys SET role='admin' WHERE id=?").run(user.id),/UNIQUE/);
- const a=await call('/login',{key:'test-admin'}),b=await call('/login',{key:'test-admin'}),ah={cookie:a.cookie,'x-csrf-token':a.data.csrf};
- assert.equal((await call('/admin/rotate-key',{currentKey:'wrong',confirm:true},'POST',ah)).status,401);
- assert.equal((await call('/admin/rotate-key',{currentKey:'test-admin'},'POST',ah)).status,400);
- assert.equal((await call('/admin/rotate-key',{currentKey:user.key,confirm:true},'POST',{authorization:'Bearer '+user.key})).status,403);
- for(const newKey of ['short',' '.repeat(16),'x'.repeat(257),'a'.repeat(16)+'\n','test-admin',user.key])assert.equal((await call('/admin/rotate-key',{currentKey:'test-admin',newKey,confirmKey:newKey,confirm:true},'POST',ah)).status,400);
- assert.equal((await call('/admin/rotate-key',{currentKey:'test-admin',newKey:'my-custom-admin-secret',confirmKey:'different',confirm:true},'POST',ah)).status,400);
- s.db.prepare('INSERT INTO settings VALUES(?,?)').run(original.id,'{"kept":true}');
- const results=await Promise.all([call('/admin/rotate-key',{currentKey:'test-admin',newKey:'my-custom-admin-secret',confirmKey:'my-custom-admin-secret',confirm:true},'POST',ah),call('/admin/rotate-key',{currentKey:'test-admin',newKey:'my-custom-admin-secret',confirmKey:'my-custom-admin-secret',confirm:true},'POST',ah)]);
- assert.deepEqual(results.map(x=>x.status).sort(),[200,401]);const rotated=results.find(x=>x.status===200);assert.equal(rotated.data.key,undefined);assert.notEqual(rotated.data.csrf,a.data.csrf);
- assert.equal((await call('/me',undefined,'GET')).status,401);assert.equal((await call('/me',undefined,'GET',{cookie:b.cookie})).status,401);assert.equal((await call('/me',undefined,'GET',ah)).status,401);
- assert.equal((await call('/login',{key:'my-custom-admin-secret'})).status,200);
- const fresh={cookie:rotated.cookie,'x-csrf-token':rotated.data.csrf};assert.equal((await call('/me',undefined,'GET',fresh)).data.id,original.id);assert.equal((await call('/settings',undefined,'GET',fresh)).data.kept,true);assert.equal((await call('/me',undefined,'GET',{authorization:'Bearer '+'my-custom-admin-secret'})).data.id,original.id);
- assert.equal(s.db.prepare("SELECT count(*) n FROM keys WHERE role='admin'").get().n,1);assert.notEqual(s.db.prepare('SELECT hash FROM keys WHERE id=?').get(original.id).hash,'my-custom-admin-secret');assert.equal((await call('/login',{key:'test-admin'})).status,401);
- }finally{await new Promise(r=>server.close(r));s.close();rmSync(dir,{recursive:true,force:true});}
-});
-test('expired logout clears cookie and server session; hostile origin is rejected',async()=>{
- const dir=mkdtempSync(path.join(tmpdir(),'logout-'));const s=await createApp({dir,adminKey:'admin',worker:false});const server=s.app.listen(0,'127.0.0.1');await new Promise(r=>server.once('listening',r));const base=`http://127.0.0.1:${server.address().port}`;
- try{const login=await fetch(base+'/api/login',{method:'POST',headers:{'content-type':'application/json'},body:'{"key":"admin"}'});const cookie=login.headers.get('set-cookie').split(';')[0];const {csrf}=await login.json();assert.equal((await fetch(base+'/api/logout',{method:'POST',headers:{cookie,origin:'https://evil.invalid','x-csrf-token':csrf}})).status,403);s.db.prepare('UPDATE sessions SET expires=0').run();const r=await fetch(base+'/api/logout',{method:'POST',headers:{cookie,'x-csrf-token':csrf}});assert.equal(r.status,200);assert.match(r.headers.get('set-cookie'),/canvas_session=;/);assert.equal(s.db.prepare('SELECT count(*) n FROM sessions').get().n,0);
- }finally{await new Promise(r=>server.close(r));s.close();rmSync(dir,{recursive:true,force:true});}
-});
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createApp } from '../backend/dist/app.js';
+import { createAccount, fixturePassword, request, setupAccount, signIn } from './account-fixture.js';
+
+async function withApi(t, run) {
+  const dir = mkdtempSync(join(tmpdir(), 'bimage-sessions-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const s = await createApp({ dir, worker: false });
+  const server = s.app.listen(0, '127.0.0.1');
+  await new Promise(resolve => server.once('listening', resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    await run({ db: s.db, base, dir });
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+    await s.close();
+  }
+}
+
+test('switching cookie identities retires the replaced session without changing either workspace', (t) => withApi(t, async ({ base, dir }) => {
+  const admin = await setupAccount(base, dir);
+  const member = await createAccount(base, admin.headers);
+  const secondAdmin = await createAccount(base, admin.headers, { email: 'backup@example.test', role: 'admin' });
+  assert.equal(secondAdmin.identity.role, 'admin');
+  assert.equal((await request(base, '/api/admin/users', { headers: secondAdmin.headers })).status, 200);
+  const payload = { email: 'unauthorized@example.test', name: '', password: fixturePassword, role: 'admin', concurrency: 1 };
+  assert.equal((await request(base, '/api/admin/users', { headers: member.headers, body: payload })).status, 403);
+
+  const settings = { form: { prompt: 'admin draft' } };
+  assert.equal((await request(base, '/api/settings', { method: 'PUT', headers: admin.headers, body: settings })).status, 200);
+  const credentials = { login: member.identity.email, password: 'wrong fixture password' };
+  const login = await request(base, '/api/login', { headers: { cookie: admin.headers.cookie }, body: credentials });
+  assert.equal(login.status, 401);
+  assert.equal((await request(base, '/api/me', { headers: admin.headers })).status, 200, 'failed login leaves the session intact');
+
+  const switched = await request(base, '/api/login', {
+    headers: { cookie: admin.headers.cookie }, body: { ...credentials, password: fixturePassword },
+  });
+  assert.equal(switched.status, 200);
+  const setCookie = switched.headers.get('set-cookie');
+  assert.match(setCookie, /; HttpOnly\b/i);
+  assert.match(setCookie, /; SameSite=Strict\b/i);
+  const cookie = setCookie.split(';')[0];
+  const identity = await switched.json();
+  assert.equal(identity.id, member.identity.id);
+  assert.notEqual(cookie, admin.headers.cookie);
+  assert.notEqual(identity.csrf, admin.identity.csrf);
+  assert.equal((await request(base, '/api/me', { headers: admin.headers })).status, 401);
+  assert.equal((await request(base, '/api/settings', {
+    method: 'PUT', headers: { cookie, 'x-csrf-token': admin.identity.csrf }, body: settings,
+  })).status, 403);
+  assert.deepEqual(await (await request(base, '/api/settings', { headers: { cookie } })).json(), {});
+
+  const restoredAdmin = await signIn(base, 'admin');
+  assert.equal(restoredAdmin.identity.id, admin.identity.id);
+  assert.deepEqual(await (await request(base, '/api/settings', { headers: restoredAdmin.headers })).json(), settings);
+}));
+
+test('expired logout clears cookie and server session; hostile origin is rejected', (t) => withApi(t, async ({ base, dir, db }) => {
+  const admin = await setupAccount(base, dir);
+  assert.equal((await request(base, '/api/logout', {
+    method: 'POST', headers: { ...admin.headers, origin: 'https://evil.invalid' },
+  })).status, 403);
+  assert.equal((await request(base, '/api/me', { headers: admin.headers })).status, 200);
+  db.prepare('UPDATE account_sessions SET expires=0 WHERE owner=?').run(admin.identity.id);
+  assert.equal((await request(base, '/api/me', { headers: admin.headers })).status, 401);
+  assert.equal((await request(base, '/api/logout', {
+    method: 'POST', headers: { cookie: admin.headers.cookie },
+  })).status, 403);
+  assert.equal(db.prepare('SELECT count(*) AS n FROM account_sessions').get().n, 1);
+  const response = await request(base, '/api/logout', { method: 'POST', headers: admin.headers });
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get('set-cookie'), /^canvas_session=;.*Expires=Thu, 01 Jan 1970/);
+  assert.equal(db.prepare('SELECT count(*) AS n FROM account_sessions').get().n, 0);
+}));

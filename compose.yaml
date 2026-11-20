@@ -1,13 +1,13 @@
 services:
   api:
     build: .
-    image: bimage-panel-api:0.1.0
+    image: "${BIMAGE_API_IMAGE:-bimage-panel-api:0.2.0}"
     container_name: Bimage-panel-api
     restart: unless-stopped
     environment:
       PORT: "6768"
       DATA_DIR: /app/data
-      CONCURRENCY: "1"
+      CONCURRENCY: "${BIMAGE_CONCURRENCY:-8}"
       COOKIE_SECURE: "${BIMAGE_COOKIE_SECURE:-false}"
     volumes:
       - ./data:/app/data
@@ -26,14 +26,14 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    image: bimage-panel-web:0.1.0
+    image: "${BIMAGE_WEB_IMAGE:-bimage-panel-web:0.2.0}"
     container_name: Bimage-panel
     restart: unless-stopped
     depends_on:
       api:
         condition: service_healthy
     ports:
-      - "0.0.0.0:${BIMAGE_PORT:-6767}:6767"
+      - "${BIMAGE_BIND_HOST:-0.0.0.0}:${BIMAGE_PORT:-6767}:6767"
     user: "101:101"
     read_only: true
     tmpfs: ["/tmp:size=16m,uid=101,gid=101", "/var/cache/nginx:size=16m,uid=101,gid=101", "/var/run:size=1m,uid=101,gid=101"]

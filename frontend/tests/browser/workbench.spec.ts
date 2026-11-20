@@ -13,8 +13,12 @@ const initialForm = {
   output_format: "png",
   references: [],
 };
+function historyPage(items: any[], query = '', token = 'fixture') {
+  const matches = items.filter(job => job.form.prompt.toLocaleLowerCase().includes(query.toLocaleLowerCase()));
+  return { items: matches.slice(0, 30), total: matches.length, active: items.some(job => job.tasks.some((task: any) => ['queued', 'running'].includes(task.status))), token, unchanged: false, nextCursor: null, removedIds: [] };
+}
 async function fixture(page: Page) {
-  const image = await page.request.get('http://127.0.0.1:5178/Bimage.png').then(r => r.body());
+  const image = await page.request.get('/Bimage.png').then(r => r.body());
   const state = {
     site: { title: "Bimage", icon: "" },
     settings: {},
@@ -59,8 +63,8 @@ async function fixture(page: Page) {
     const req = route.request(),
       path = new URL(req.url()).pathname.slice(4),
       method = req.method(),
-      body = method === "GET" ? null : req.postDataJSON();
-    if (method !== "GET") state.posts.push({ path, body });
+      body = ["GET", "HEAD"].includes(method) ? null : req.postDataJSON();
+    if (!["GET", "HEAD"].includes(method)) state.posts.push({ path, body });
     if (path.startsWith("/assets/"))
       return route.fulfill({
         status: 200,
@@ -69,6 +73,7 @@ async function fixture(page: Page) {
       });
     let out: any = {};
     if (path === "/site") out = state.site;
+    else if (path === "/setup") out = { required: false };
     else if (path === "/me" || path === "/login")
       out = {
         id: "admin",
@@ -91,16 +96,18 @@ async function fixture(page: Page) {
         };
         state.jobs.unshift(job as any);
         out = job;
-      } else out = state.jobs;
+      } else {
+        const url = new URL(req.url());
+        const known = JSON.parse(url.searchParams.get('known') || '[]') as string[];
+        out = { ...historyPage(state.jobs, url.searchParams.get('q') || ''), removedIds: known.filter(id => !state.jobs.some(job => job.id === id)) };
+      }
     } else if (path === "/assets") out = { id: "uploaded" };
     else if (path === "/rewrite") out = { text: "润色结果\n第二行" };
     else if (path === "/admin/site") {
       state.site = body;
       out = body;
-    } else if (path === "/admin/keys") out = [];
-    else if (path.endsWith("/models"))
+    } else if (path.endsWith("/models"))
       out = { data: state.providers[0].models };
-    else if (path === "/admin/rotate-key") out = { csrf: "rotated" };
     return route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -130,12 +137,12 @@ test('queue cancellation responds immediately and applies the returned job witho
   const cancelRequest = new Promise<void>(resolve => cancelReady = resolve);
   const releaseCancel = new Promise<void>(resolve => resumeCancel = resolve);
   let passedStale = false, cancels = 0, jobReads = 0;
-  await page.route('**/api/jobs', async route => {
-    if (passedStale) return route.fulfill({ json: [updated] });
+  await page.route('**/api/jobs?*', async route => {
+    if (passedStale) return route.fulfill({ json: historyPage([updated]) });
     passedStale = true;
     historyReady();
     await releaseHistory;
-    return route.fulfill({ json: [job] });
+    return route.fulfill({ json: historyPage([job]) });
   });
   await page.route('**/api/jobs/j', async route => {
     jobReads++;
@@ -147,7 +154,7 @@ test('queue cancellation responds immediately and applies the returned job witho
     await releaseCancel;
     return route.fulfill({ json: { ...updated, cancelledCount: 1 } });
   });
-  await page.route('**/api/jobs', route => route.fulfill({ json: [job] }), { times: 1 });
+  await page.route('**/api/jobs?*', route => route.fulfill({ json: historyPage([job]) }), { times: 1 });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.goto('/');
@@ -184,7 +191,7 @@ test('queue cancellation failure unlocks the action and a task that starts first
   await fixture(page);
   const job = { id: 'race', form: initialForm, status: 'queued', created: new Date().toISOString(), tasks: [{ id: 'r', status: 'queued' }] };
   let state = job, cancels = 0;
-  await page.route('**/api/jobs', route => route.fulfill({ json: [state] }));
+  await page.route('**/api/jobs?*', route => route.fulfill({ json: historyPage([state]) }));
   await page.route('**/api/jobs/race/cancel', route => {
     if (++cancels === 1) return route.fulfill({ status: 503, json: { error: '测试：取消请求失败' } });
     state = { ...job, status: 'running', tasks: [{ id: 'r', status: 'running' }] };
@@ -204,7 +211,7 @@ test('queue cancellation failure unlocks the action and a task that starts first
 });
 for (const reduced of [false,true]) test(`dialog motion evidence ${reduced}`, async ({page}, testInfo) => {
   await fixture(page); await page.emulateMedia({reducedMotion:reduced ? 'reduce' : 'no-preference'}); await page.goto('/');
-  await page.getByRole('button',{name:'设置',exact:true}).click();
+  await page.getByRole('button',{name:'系统设置',exact:true}).click();
   const dir = testInfo.outputPath('dialog-motion');
   mkdirSync(dir,{recursive:true});
   await page.screenshot({path:`${dir}/before.png`});
@@ -268,7 +275,7 @@ test('custom selects support keyboard, typeahead, escape, outside click, disable
 });
 for (const reduced of [false, true]) test(`motion is restrained and reduced-motion aware ${reduced}`, async ({page}) => {
   await fixture(page); await page.emulateMedia({reducedMotion: reduced ? 'reduce' : 'no-preference'}); await page.goto('/');
-  await page.getByRole('button',{name:'设置',exact:true}).click();
+  await page.getByRole('button',{name:'系统设置',exact:true}).click();
   await page.getByRole('button',{name:'编辑',exact:true}).click();
   const duration = await page.getByRole('dialog').evaluate(el => getComputedStyle(el).animationDuration);
   const backdropDuration = await page.getByRole('dialog').evaluate(el => getComputedStyle(el, '::backdrop').animationDuration);
@@ -289,7 +296,7 @@ for (const reduced of [false, true]) test(`view and inline prompt transitions re
   await page.emulateMedia({ reducedMotion: reduced ? 'reduce' : 'no-preference' });
   await page.goto('/');
   await expect(page.locator('.workspace')).toBeVisible();
-  const settings = page.getByRole('button', { name: '设置', exact: true });
+  const settings = page.getByRole('button', { name: '系统设置', exact: true });
   const entry = await settings.evaluate(async (el) => {
     (el as HTMLElement).click();
     await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
@@ -326,29 +333,33 @@ for (const reduced of [false, true]) test(`view and inline prompt transitions re
   await expect(outer).toHaveCSS('border-bottom-width', '1px');
   await outer.screenshot({ path: testInfo.outputPath('prompt-single-edge.png'), animations: 'disabled' });
 });
-test('history filters full multiline prompts locally without requests, clears and resets with tenant', async ({page}) => {
+test('history searches full multiline prompts on server, clears and resets with tenant', async ({page}) => {
   const state = await fixture(page);
   state.jobs.push({...state.jobs[0],id:'second',form:{...initialForm,prompt:'Moonlight\nHidden Full Prompt Tail'}});
   let requests = 0; page.on('request', r => {if (r.url().includes('/api/')) requests++;});
   await page.goto('/');
   await expect(page.locator('.job')).toHaveCount(2);
   expect(await page.locator('body').innerText()).not.toContain('每张图片独立请求，任务持久保存。');
-  await page.clock.install(); await page.clock.pauseAt(new Date());
+  await page.clock.install();
   const baseline = requests, posts = state.posts.length;
   const search = page.getByRole('searchbox',{name:'搜索任务提示词'});
   await search.fill('hidden full prompt tail');
+  await page.clock.fastForward(250);
   await expect(page.locator('.job')).toHaveCount(1);
   await expect(page.locator('.history-count')).toHaveText('1 个记录');
   await search.fill('unmatched keyword');
+  await page.clock.fastForward(250);
   await expect(page.getByText('没有匹配的任务')).toBeVisible();
   await page.getByRole('button',{name:'清除搜索'}).first().click();
+  await page.clock.fastForward(250);
   await expect(page.locator('.job')).toHaveCount(2);
-  await search.fill('保留第二行'); await expect(page.locator('.job')).toHaveCount(1);
-  expect(requests).toBe(baseline); expect(state.posts.length).toBe(posts);
+  await search.fill('保留第二行'); await page.clock.fastForward(250); await expect(page.locator('.job')).toHaveCount(1);
+  expect(requests).toBeGreaterThan(baseline); expect(state.posts.length).toBe(posts);
   await page.getByRole('button',{name:'退出登录'}).click();
   await expect(search).toHaveCount(0);
-  await page.getByRole('textbox',{name:'访问密钥'}).fill('fixture-key');
-  await page.getByRole('button',{name:'进入',exact:true}).click();
+  await page.getByLabel('邮箱', { exact: true }).fill('admin');
+  await page.getByLabel('密码', { exact: true }).fill('fixture-password');
+  await page.getByRole('button',{name:'登录',exact:true}).click();
   await expect(page.getByRole('searchbox',{name:'搜索任务提示词'})).toHaveValue('');
 });
 test('logout failure is a transient typed warning, never a persistent login error', async ({page}) => {
@@ -405,18 +416,7 @@ test('repair output image picker is custom', async ({ page }) => {
   await picker.click(); await page.getByRole('option',{name:'图片 2',exact:true}).click();
   await expect(picker).toContainText('图片 2');
 });
-test('all model-purpose controls are custom even inside a modal', async ({ page }) => {
-  await fixture(page); await page.goto('/');
-  await page.getByRole('button', {name:'设置',exact:true}).click();
-  await page.getByRole('button', {name:'编辑',exact:true}).click();
-  await expect(page.locator('select')).toHaveCount(0);
-  const purpose = page.getByRole('combobox', {name:'image-model 用途',exact:true});
-  await purpose.click();
-  await expect(page.getByRole('listbox', {name:'image-model 用途'})).toBeVisible();
-  await page.getByRole('option', {name:'图像 + 文本',exact:true}).click();
-  await expect(purpose).toContainText('图像 + 文本');
-  await expect(purpose).toBeFocused();
-});
+
 for (const failed of [false, true]) {
   test(`quick prompt locks edits and dismissal until ${failed ? 'error' : 'result'}`, async ({ page }, testInfo) => {
     await fixture(page);
@@ -628,13 +628,14 @@ test('job deletion requires confirmation, handles errors and evicts the cached p
   await dialog.getByRole('button', { name: '永久删除' }).click();
   await expect(page.getByRole('alert')).toContainText('测试：任务仍在结束中');
   await expect(card).toBeVisible();
-  const listUrl = '**/api/jobs';
-  const staleJobs = JSON.stringify(state.jobs);
+  const listUrl = '**/api/jobs?*';
+  const staleJobs = JSON.stringify(historyPage(state.jobs));
   await page.route(listUrl, async route => {
     pollStarted();
     await pendingPoll;
     await route.fulfill({ contentType: 'application/json', body: staleJobs });
   }, { times: 1 });
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
   await startedPoll;
   try {
     await dialog.getByRole('button', { name: '永久删除' }).click();
@@ -657,7 +658,7 @@ test('deletion clears cached previews in a second tab', async ({ page, context }
   const state = await fixture(page);
   const sibling = await context.newPage();
   await fixture(sibling);
-  await sibling.route('**/api/jobs', route => route.fulfill({ json: state.jobs }));
+  await sibling.route('**/api/jobs?*', route => route.fulfill({ json: { ...historyPage(state.jobs), removedIds: state.jobs.length ? [] : ['j'] } }));
   await page.route('**/api/jobs/j', route => {
     state.jobs.splice(0, 1);
     return route.fulfill({ json: { deletedAssetIds: ['art'] } });
@@ -669,6 +670,7 @@ test('deletion clears cached previews in a second tab', async ({ page, context }
   const url = (await preview.getAttribute('src'))!;
   await page.getByRole('button', { name: '删除', exact: true }).click();
   await page.getByRole('button', { name: '永久删除', exact: true }).click();
+  await sibling.evaluate(() => window.dispatchEvent(new Event('focus')));
   await expect(sibling.locator('.job')).toHaveCount(0);
   expect(await sibling.evaluate(url => fetch(url).then(() => true, () => false), url)).toBe(false);
 });
@@ -731,14 +733,14 @@ test("desktop: real SFC workspace, retry refill, automatic submit, quick prompt,
     page.getByRole("textbox", { name: "提示词", exact: true }),
   ).toHaveValue(/第一行\n第二行/);
   expect(state.posts.filter((p) => p.path === "/jobs")).toHaveLength(1);
-  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("button", { name: "系统设置", exact: true }).click();
   await page.getByRole("button", { name: "编辑", exact: true }).click();
   await expect(page.getByRole("heading", { name: "编辑供应商" })).toBeVisible();
   await page.getByRole("button", { name: "关闭弹窗" }).click();
   await overflow(page);
   expect(errors).toEqual([]);
   await page.getByRole("button", { name: "退出登录" }).click();
-  await expect(page.getByRole("textbox", { name: "访问密钥" })).toHaveValue("");
+  await expect(page.getByLabel("密码", { exact: true })).toHaveValue("");
   await expect(
     page.getByRole("heading", { name: "Bimage", exact: true }),
   ).toBeVisible();
@@ -748,7 +750,7 @@ test("desktop: real SFC workspace, retry refill, automatic submit, quick prompt,
 });
 for (const width of [1440, 390, 320])
   for (const theme of ["light", "dark"])
-    test(`site logo layout ${width} ${theme}`, async ({ page }) => {
+    test(`site logo layout ${width} ${theme}`, async ({ page }, testInfo) => {
       const state = await fixture(page);
       await page.setViewportSize({ width, height: 960 });
       await page.addInitScript(
@@ -764,13 +766,13 @@ for (const width of [1440, 390, 320])
       await expect(page.locator('.image-open img')).toHaveAttribute('src', /^blob:/);
       await page.evaluate(()=>window.scrollTo(0,0));
       await page.screenshot({
-        path: `../.impeccable/review/workbench-${width}-${theme}.png`,
+        path: testInfo.outputPath(`workbench-${width}-${theme}.png`),
         fullPage: true,
       });
       await page.getByRole('searchbox', {name:'搜索任务提示词'}).fill('保留第二行');
       await expect(page.locator('.history-count')).toHaveText('1 个记录');
       await page.locator('.history').scrollIntoViewIfNeeded();
-      await page.screenshot({path:`../.impeccable/review/ui-v011-search-${width}-${theme}.png`,fullPage:true});
+      await page.screenshot({path:testInfo.outputPath(`ui-v011-search-${width}-${theme}.png`),fullPage:true});
       await page.getByRole('button', {name:'重试',exact:true}).click();
       const combo = page.getByRole('combobox',{name:'图像模型',exact:true});
       await combo.click();
@@ -782,14 +784,14 @@ for (const width of [1440, 390, 320])
       await expect(page.locator('.toast')).toHaveAttribute('data-type','success');
       await expect(page.locator('.toast')).toHaveCSS('opacity','1');
       await expect(list).toHaveCSS('opacity','1');
-      await page.screenshot({path:`../.impeccable/review/ui-v011-select-toast-${width}-${theme}.png`});
+      await page.screenshot({path:testInfo.outputPath(`ui-v011-select-toast-${width}-${theme}.png`)});
       await page.keyboard.press('Escape');
       if (width === 1440) {
         const c = (await page.locator(".composer").boundingBox())!,
           h = (await page.locator(".history").boundingBox())!;
         expect(Math.abs(c.width - h.width)).toBeLessThan(1);
       }
-      await page.getByRole("button", { name: "设置", exact: true }).click();
+      await page.getByRole("button", { name: "系统设置", exact: true }).click();
       await page.getByRole("tab", { name: "站点样式" }).click();
       const image = page.getByAltText("站点图标预览"),
         upload = page.getByRole("button", { name: "上传图标" });
@@ -809,7 +811,7 @@ for (const width of [1440, 390, 320])
       expect(state.site.title).toBe("My Bimage");
       await overflow(page);
       await page.screenshot({
-        path: `../.impeccable/review/site-${width}-${theme}.png`,
+        path: testInfo.outputPath(`site-${width}-${theme}.png`),
         fullPage: true,
       });
     });

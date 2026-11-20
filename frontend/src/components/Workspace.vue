@@ -10,13 +10,17 @@ import {
   ArrowUpRight,
   X,
   Search,
+  UsersRound,
 } from "lucide-vue-next";
 import Composer from "./Composer.vue";
 import ToastNotice, { type Notice, type NoticeType } from './ToastNotice.vue';
 import JobCard from "./JobCard.vue";
 import QuickPrompt from "./QuickPrompt.vue";
 import SettingsPanel from "./SettingsPanel.vue";
+import UserManagement from "./UserManagement.vue";
 import { assetCache } from "../composables/assetCache";
+import { useHistory } from "../composables/useHistory";
+import { resolveTextDefaults } from "../composables/textDefaults";
 import { emptyForm, restoreForm, jobPayload, resolveChoice } from "../domain";
 import type {
   Site,
@@ -39,11 +43,9 @@ const emit = defineEmits<{
   theme: [];
   logout: [];
   site: [site: Site];
-  csrf: [token: string];
 }>();
-const page = ref("studio"),
+const page = ref<"studio" | "users" | "settings">("studio"),
   providers = ref<Provider[]>([]),
-  jobs = ref<Job[]>([]),
   cancellingJobs = ref(new Set<string>()),
   historyHeading = ref<HTMLElement>(),
   settings = ref<Settings>({}),
@@ -52,23 +54,32 @@ const page = ref("studio"),
   quick = ref(false),
   busy = ref(false),
   loading = ref(true);
+const pageTitle = computed(() => ({ studio: "图像工作台", users: "用户管理", settings: "系统设置" })[page.value]);
+const pageContext = computed(() => ({ studio: "让想法，成为画面。", users: "管理登录账号与图像请求权限。", settings: "连接服务，整理创作偏好。" })[page.value]);
+const studioReentered = ref(false);
+watch(page, (current, previous) => {
+  if (current === 'studio' && previous !== 'studio') studioReentered.value = true;
+});
 let active = true,
   draftVersion = 0,
-  historyRevision = 0,
-  historyRequest = 0,
-  appliedHistoryRequest = 0,
   saveTimer: ReturnType<typeof setTimeout> | undefined,
-  pollTimer: ReturnType<typeof setTimeout> | undefined,
   noticeTimer: ReturnType<typeof setTimeout> | undefined,
   saveQueue = Promise.resolve();
 const available = computed(() =>
   providers.value.filter((p) => p.owner === props.identity.id || p.shared),
 );
-const historyQuery = ref('');
-const matchedJobs = computed(() => {
-  const query = historyQuery.value.toLocaleLowerCase();
-  return query ? jobs.value.filter(job => job.form.prompt.toLocaleLowerCase().includes(query)) : jobs.value;
+const history = useHistory(props.api, props.signal, missing => {
+  const retained = new Set(form.value.references);
+  for (const job of history.jobs.value) {
+    for (const id of job.form.references) retained.add(id);
+    for (const task of job.tasks) if (task.asset) retained.add(task.asset);
+  }
+  const cache = assetCache(props.signal);
+  for (const job of missing) for (const task of job.tasks)
+    if (task.asset && !retained.has(task.asset)) cache.evict(task.asset);
 });
+const { jobs, query: historyQuery, total: historyTotal, hasMore, loadingMore } = history;
+const refreshHistory = history.refresh;
 function notify(message: string, type: NoticeType, options: Pick<Notice, 'action' | 'shape'> = {}) {
   notice.value = { message, type, ...options };
   clearTimeout(noticeTimer);
@@ -110,35 +121,6 @@ function change(next: GenerationForm) {
   settings.value = { ...settings.value, form: next };
   persist();
 }
-function replaceHistory(next: Job[]) {
-  const ids = new Set(next.map(job => job.id));
-  const missing = jobs.value.filter(job => !ids.has(job.id));
-  if (missing.length) {
-    // Other tabs/devices discover removals on poll. Evict the old previews
-    // unless the asset is still displayed by another record or local draft.
-    const retained = new Set(form.value.references);
-    for (const job of next) {
-      for (const id of job.form.references) retained.add(id);
-      for (const task of job.tasks) if (task.asset) retained.add(task.asset);
-    }
-    const cache = assetCache(props.signal);
-    for (const job of missing) {
-      for (const task of job.tasks) {
-        if (task.asset && !retained.has(task.asset)) cache.evict(task.asset);
-      }
-    }
-  }
-  const pending = cancellingJobs.value;
-  const previous = new Map(jobs.value.filter(job => pending.has(job.id)).map(job => [job.id, job]));
-  jobs.value = next.map(job => previous.get(job.id) ?? job);
-}
-async function refreshHistory() {
-  const revision = historyRevision, request = ++historyRequest;
-  const next = await props.api<Job[]>("/jobs");
-  if (!active || props.signal.aborted || revision !== historyRevision || request <= appliedHistoryRequest) return;
-  appliedHistoryRequest = request;
-  replaceHistory(next);
-}
 async function refresh() {
   const [p] = await Promise.all([
     props.api<Provider[]>("/providers"),
@@ -160,37 +142,17 @@ function resolveDefaults() {
     },
   );
   form.value = { ...form.value, ...image };
-  const text = resolveChoice(
-    available.value,
-    "text",
-    settings.value.textProvider,
-    settings.value.textModel,
-  );
-  settings.value = {
-    ...settings.value,
-    textProvider: text.providerId,
-    textModel: text.model,
-  };
-}
-async function poll() {
-  if (!active) return;
-  try {
-    await refreshHistory();
-  } catch {
-  } finally {
-    if (active) pollTimer = setTimeout(poll, document.hidden ? 8000 : 2200);
-  }
+  settings.value = resolveTextDefaults(available.value, settings.value);
 }
 onMounted(async () => {
   await run(async () => {
-    const [p, j, s] = await Promise.all([
+    const [p, , s] = await Promise.all([
       props.api<Provider[]>("/providers"),
-      props.api<Job[]>("/jobs"),
+      refreshHistory(),
       props.api<Settings>("/settings"),
     ]);
     if (!active) return;
     providers.value = p;
-    jobs.value = j;
     settings.value = s;
     form.value = s.form
       ? restoreForm(s.form)
@@ -202,12 +164,11 @@ onMounted(async () => {
     resolveDefaults();
   });
   loading.value = false;
-  if (active) pollTimer = setTimeout(poll, 2200);
+  if (active) history.start();
 });
 onBeforeUnmount(() => {
   active = false;
   clearTimeout(saveTimer);
-  clearTimeout(pollTimer);
   clearTimeout(noticeTimer);
   providers.value = [];
   jobs.value = [];
@@ -218,9 +179,9 @@ onBeforeUnmount(() => {
   notice.value = null;
 });
 watch(
-  [page, () => props.site.title],
+  [pageTitle, () => props.site.title],
   () =>
-    (document.title = `${props.site.title || "Bimage"} | ${page.value === "studio" ? "图像工作台" : "设置"}`),
+    (document.title = `${props.site.title || "Bimage"} | ${pageTitle.value}`),
   { immediate: true },
 );
 async function generate() {
@@ -259,6 +220,7 @@ async function cancelQueued(id: string) {
   if (cancellingJobs.value.has(id) ||
       !jobs.value.find(job => job.id === id)?.tasks.some(task => task.status === "queued")) return;
   cancellingJobs.value.add(id);
+  history.beginMutation(id);
   try {
     const result = await run(() => props.api<Job & { cancelledCount: number }>(
       "/jobs/" + encodeURIComponent(id) + "/cancel", {},
@@ -266,12 +228,12 @@ async function cancelQueued(id: string) {
     if (!result || !active || props.signal.aborted) return;
     const { cancelledCount, ...job } = result;
     // Apply the mutation's snapshot directly; an older poll must not restore queued slots.
-    historyRevision++;
-    jobs.value = jobs.value.map(current => current.id === id ? job : current);
+    history.endMutation(id, job);
     if (cancelledCount > 0) notify(`已取消 ${cancelledCount} 项排队任务。`, "success");
     else notify("没有可取消的排队任务。", "warning");
   } finally {
     cancellingJobs.value.delete(id);
+    history.endMutation(id);
   }
 }
 async function removeJob(id: string) {
@@ -280,14 +242,13 @@ async function removeJob(id: string) {
   ));
   if (!result || !active || props.signal.aborted) return;
   // Responses from polls started before deletion must not restore the card.
-  historyRevision++;
   const cache = assetCache(props.signal);
   const removed = new Set(result.deletedAssetIds);
   for (const asset of removed) cache.evict(asset);
   if (form.value.references.some(asset => removed.has(asset))) {
     change({ ...form.value, references: form.value.references.filter(asset => !removed.has(asset)) });
   }
-  jobs.value = jobs.value.filter(job => job.id !== id);
+  history.remove(id);
   await nextTick();
   if (active && !props.signal.aborted) {
     historyHeading.value?.focus({ preventScroll: true });
@@ -330,6 +291,7 @@ function defaultsSaved(value: Settings) {
       <nav aria-label="主导航">
         <button
           aria-label="图像工作台"
+          :aria-current="page === 'studio' ? 'page' : undefined"
           :class="{ selected: page === 'studio' }"
           @click="page = 'studio'"
         >
@@ -338,11 +300,23 @@ function defaultsSaved(value: Settings) {
       </nav>
       <div class="sidebar-bottom">
         <button
-          aria-label="设置"
+          v-if="identity.role === 'admin'"
+          type="button"
+          aria-label="用户管理"
+          :aria-current="page === 'users' ? 'page' : undefined"
+          :class="{ selected: page === 'users' }"
+          @click="page = 'users'"
+        >
+          <UsersRound :size="18" /><span>用户管理</span>
+        </button>
+        <button
+          type="button"
+          aria-label="系统设置"
+          :aria-current="page === 'settings' ? 'page' : undefined"
           :class="{ selected: page === 'settings' }"
           @click="page = 'settings'"
         >
-          <SettingsIcon :size="18" /><span>设置</span></button
+          <SettingsIcon :size="18" /><span>系统设置</span></button
         ><button aria-label="退出登录" @click="emit('logout')">
           <LogOut :size="18" /><span>退出登录</span>
         </button>
@@ -350,17 +324,16 @@ function defaultsSaved(value: Settings) {
     </aside>
     <main class="main-content">
       <header class="page-header">
-        <h1>{{ page === "studio" ? "图像工作台" : "设置" }}</h1>
-        <span class="page-context">{{
-          page === "studio" ? "让想法，成为画面。" : "连接服务，整理创作偏好。"
-        }}</span>
+        <h1>{{ pageTitle }}</h1>
+        <span class="page-context">{{ pageContext }}</span>
       </header>
       <ToastNotice :notice="notice" @close="notice = null" @settings="page = 'settings'; notice = null" />
-      <div v-if="loading" class="loading-layout" aria-label="载入工作台">
+      <UserManagement v-if="page === 'users' && identity.role === 'admin'" :api="api" @created="notify('用户已创建。', 'success')" />
+      <div v-else-if="loading" class="loading-layout" aria-label="载入工作台">
         <div />
         <div />
       </div>
-      <div v-else-if="page === 'studio'" class="workspace">
+      <div v-else-if="page === 'studio'" class="workspace" :class="{ 'studio-reentered': studioReentered }">
         <Composer
           :form="form"
           :providers="available"
@@ -377,12 +350,12 @@ function defaultsSaved(value: Settings) {
           <div class="section-head history-head">
             <div class="history-heading">
               <h2 ref="historyHeading" tabindex="-1">任务记录</h2>
-              <span class="history-count" role="status">{{ matchedJobs.length }} 个记录</span>
+              <span class="history-count" role="status">{{ historyTotal }} 个记录</span>
             </div>
             <div class="history-search"><Search :size="15" aria-hidden="true" /><input v-model="historyQuery" type="search" aria-label="搜索任务提示词" placeholder="搜索提示词" /><button v-if="historyQuery" type="button" class="icon-button" aria-label="清除搜索" @click="historyQuery = ''"><X :size="14" /></button></div>
           </div>
 
-          <div v-if="!jobs.length" class="empty-history">
+          <div v-if="!jobs.length && !historyQuery" class="empty-history">
             <Image :size="38" :stroke-width="1.3" />
             <h3>暂无任务记录</h3>
             <p>从一句描述开始，创作会保存在这里。</p>
@@ -390,9 +363,9 @@ function defaultsSaved(value: Settings) {
               去配置供应商<ArrowUpRight :size="15" />
             </button>
           </div>
-          <div v-else-if="!matchedJobs.length" class="empty-history"><Search :size="32" /><h3>没有匹配的任务</h3><p>试试其他提示词，或清除搜索查看全部记录。</p><button type="button" @click="historyQuery = ''">清除搜索</button></div>
+          <div v-else-if="!jobs.length" class="empty-history"><Search :size="32" /><h3>没有匹配的任务</h3><p>试试其他提示词，或清除搜索查看全部记录。</p><button type="button" @click="historyQuery = ''">清除搜索</button></div>
           <JobCard
-            v-for="job in matchedJobs"
+            v-for="job in jobs"
             :key="job.id"
             :job="job"
             :api="api"
@@ -404,10 +377,12 @@ function defaultsSaved(value: Settings) {
             @restore="restore(job)"
             @repair="(id, prompt) => repair(job, id, prompt)"
           />
+          <button v-if="hasMore" type="button" class="history-load-more" :disabled="loadingMore" @click="run(history.loadMore)">{{ loadingMore ? '加载中…' : '加载更多' }}</button>
         </section>
       </div>
       <SettingsPanel
         v-else
+        :signal="signal"
         :providers="providers"
         :settings="settings"
         :site="site"
@@ -417,7 +392,6 @@ function defaultsSaved(value: Settings) {
         @refresh="run(refresh)"
         @settings="defaultsSaved"
         @site="(s) => emit('site', s)"
-        @csrf="(t) => emit('csrf', t)"
       /><QuickPrompt
         v-if="quick"
         :form="form"

@@ -1,9 +1,12 @@
 import test from "node:test";
+import { loopbackProvider } from '../../test/loopback-provider.js';
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { createApp, validateUrl } from "../dist/app.js";
+import { setupAccount } from "./account-fixture.js";
 
 const png =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aJ1sAAAAASUVORK5CYII=";
@@ -11,16 +14,17 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function fixture(handler) {
   const upstream = createServer(handler);
   await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
-  const dir = mkdtempSync(path.join(process.env.TMPDIR, "bimage-security-"));
-  const service = await createApp({ dir, adminKey: "test-only", retryMs: 5 });
+  const dir = mkdtempSync(path.join(tmpdir(), "bimage-security-"));
+  const service = await createApp({ dir, retryMs: 5, providerNetwork: loopbackProvider(upstream) });
   const server = service.app.listen(0, "127.0.0.1");
   await new Promise((resolve) => server.once("listening", resolve));
   const base = `http://127.0.0.1:${server.address().port}`;
+  const admin = await setupAccount(base, dir);
   const call = async (route, payload) => {
     const response = await fetch(base + "/api" + route, {
       method: payload ? "POST" : "GET",
       headers: {
-        authorization: "Bearer test-only",
+        ...admin.headers,
         "content-type": "application/json",
       },
       body: payload ? JSON.stringify(payload) : undefined,

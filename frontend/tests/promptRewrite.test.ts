@@ -35,6 +35,16 @@ describe("inline prompt review", () => {
     expect(api).not.toHaveBeenCalled();
   });
 
+  it("routes quick rewrites independently and refuses explicit missing quick defaults", async () => {
+    const api = vi.fn(async () => ({ text: "快速结果。" })) as Api;
+    const signal = new AbortController().signal;
+    const settings = { textProvider: "opt-provider", textModel: "opt-model", quickProvider: "quick-provider", quickModel: "quick-model" };
+    await expect(rewritePrompt(api, settings, "简述。", ["reference"], signal, "quick")).resolves.toBe("快速结果。");
+    expect(api).toHaveBeenCalledWith("/rewrite", { providerId: "quick-provider", model: "quick-model", prompt: "简述。", references: ["reference"] }, undefined, signal);
+    await expect(rewritePrompt(api, { ...settings, quickProvider: "", quickModel: "" }, "简述。", [], signal, "quick")).rejects.toThrow("快速提示词模型");
+    expect(api).toHaveBeenCalledTimes(1);
+  });
+
   it("discards a result that arrives after its request lifetime ended", async () => {
     const controller = new AbortController();
     const api = vi.fn(async () => {

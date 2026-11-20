@@ -6,18 +6,19 @@ import { Store } from "./db.js";
 import { Assets, detectMime } from "./assets.js";
 import { Providers } from "./providers.js";
 import { body, fail, HttpError, object, param, user } from "./http.js";
-import { validKey } from "./auth.js";
-import { limited, safeFetch, upstream } from "./network.js";
+import { limited } from "./network.js";
 import { MAX_REFERENCE_IMAGES } from "./limits.js";
+import { History } from "./history.js";
 import type {
   AssetRow,
   ImageForm,
   JobRow,
-  KeyRow,
   ProviderRow,
   TaskRow,
   TaskStatus,
 } from "./types.js";
+
+type Owner = { id: string; role: "admin" | "user" };
 
 export class Queue {
   private controllers = new Map<string, AbortController>();
@@ -32,6 +33,10 @@ export class Queue {
     private concurrency = 1,
     private retryMs = 1000,
   ) {
+    store.db.exec(`
+      CREATE INDEX IF NOT EXISTS tasks_queue ON tasks(status,next);
+      CREATE INDEX IF NOT EXISTS tasks_job ON tasks(job);
+    `);
     store.run(
       "UPDATE tasks SET status='interrupted',error='服务重启；上游可能已收费，请核对后手动重试' WHERE status='running'",
     );
@@ -42,8 +47,23 @@ export class Queue {
     this.timer = setInterval(() => {
       if (this.closed) return;
       const capacity = Math.max(0, this.concurrency - this.active);
+      if (!capacity) return;
       const tasks = this.store.all<TaskRow>(
-        "SELECT * FROM tasks WHERE status='queued' AND next<=? ORDER BY rowid LIMIT ?",
+        `WITH running AS (
+           SELECT jobs.owner, count(*) AS n
+           FROM tasks JOIN jobs ON jobs.id=tasks.job
+           WHERE tasks.status='running' GROUP BY jobs.owner
+         ), eligible AS (
+           SELECT tasks.rowid AS slot, accounts.concurrency - COALESCE(running.n,0) AS free,
+                  row_number() OVER (PARTITION BY jobs.owner ORDER BY tasks.rowid) AS position
+           FROM tasks JOIN jobs ON jobs.id=tasks.job
+           JOIN accounts ON accounts.id=jobs.owner
+           LEFT JOIN running ON running.owner=jobs.owner
+           WHERE tasks.status='queued' AND tasks.next<=?
+             AND accounts.concurrency>COALESCE(running.n,0)
+         )
+         SELECT tasks.* FROM eligible JOIN tasks ON tasks.rowid=eligible.slot
+         WHERE eligible.position<=eligible.free ORDER BY eligible.slot LIMIT ?`,
         Date.now(),
         capacity,
       );
@@ -67,7 +87,7 @@ export class Queue {
       onIdle();
     });
   }
-  validate(input: unknown, identity: KeyRow): ImageForm {
+  validate(input: unknown, identity: Owner): ImageForm {
     const form = object(input);
     this.providers.usable(form.providerId, identity);
     if (
@@ -112,7 +132,7 @@ export class Queue {
     for (const id of form.references) this.assets.owned(id, identity.id);
     return form as ImageForm;
   }
-  ownJob(id: string, identity: KeyRow): JobRow {
+  ownJob(id: string, identity: Owner): JobRow {
     const job = this.store.get<JobRow>("SELECT * FROM jobs WHERE id=?", id);
     if (!job || (job.owner !== identity.id && identity.role !== "admin"))
       throw fail(404, "任务不存在");
@@ -213,7 +233,7 @@ export class Queue {
       }
       payload = multipart;
     }
-    const result = await upstream(provider, endpoint, payload, signal);
+    const result = await this.providers.request(provider, endpoint, payload, signal);
     const image =
       Array.isArray(result.data) && result.data[0]
         ? object(result.data[0])
@@ -224,11 +244,7 @@ export class Queue {
         throw new Error("图片响应过大");
       bytes = Buffer.from(image.b64_json, "base64");
     } else if (typeof image.url === "string") {
-      const response = await safeFetch(
-        image.url,
-        { signal },
-        !!provider.allowPrivate,
-      );
+      const response = await this.providers.download(image.url, signal);
       if (!response.ok) throw new Error("图片下载失败");
       bytes = await limited(response, 24 * 1024 * 1024);
     } else throw new Error("上游没有返回图片");
@@ -251,11 +267,11 @@ export class Queue {
         "SELECT * FROM jobs WHERE id=?",
         task.job,
       )!;
-      const identity = this.store.get<KeyRow>(
-        "SELECT * FROM keys WHERE id=?",
+      const identity = this.store.get<Owner>(
+        "SELECT id,role FROM accounts WHERE id=?",
         job.owner,
       );
-      if (!validKey(identity)) throw new Error("访问密钥已失效");
+      if (!identity) throw new Error("账号尚未启用");
       const form = JSON.parse(job.form) as ImageForm;
       // Recheck sharing at dequeue, not just submission.
       const provider = this.providers.usable(form.providerId, identity);
@@ -385,16 +401,18 @@ export class Queue {
       });
       response.json(this.view(this.ownJob(id, identity)));
     });
-    app.get("/api/jobs", (request, response) =>
-      response.json(
-        this.store
-          .all<JobRow>(
-            "SELECT * FROM jobs WHERE owner=? ORDER BY created DESC",
-            user(request).id,
-          )
-          .map((job) => this.view(job)),
-      ),
-    );
+    const history = new History(this.store);
+    app.get("/api/jobs", (request, response) => {
+      if (Object.keys(request.query).length) {
+        const page = history.page(user(request).id, request.query);
+        // Explicit JSON versioning, never Express's conditional 304 path.
+        response.set('Cache-Control', 'private, no-store');
+        return response.type('application/json').end(JSON.stringify({ ...page, items: page.items?.map(job => this.view(job)) }));
+      }
+      return response.json(this.store.all<JobRow>(
+        "SELECT * FROM jobs WHERE owner=? ORDER BY created DESC,id DESC", user(request).id,
+      ).map(job => this.view(job)));
+    });
     app.get("/api/jobs/:id", (request, response) =>
       response.json(this.view(this.ownJob(param(request), user(request)))),
     );
@@ -462,6 +480,8 @@ export class Queue {
         throw fail(400, "重试可能再次收费，必须确认");
       const identity = user(request),
         job = this.ownJob(param(request), identity);
+      if (!this.store.get("SELECT 1 FROM accounts WHERE id=?", job.owner))
+        throw fail(409, "工作空间的账号尚未启用，无法重试");
       if (
         this.store
           .all<{ id: string }>("SELECT id FROM tasks WHERE job=?", job.id)

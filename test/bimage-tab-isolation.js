@@ -5,17 +5,21 @@ import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { createApp } from '../backend/dist/app.js';
 import { serveFrontend } from './frontend-server.js';
+import { setupAccount, createAccount } from './account-fixture.js';
 
 // Real cookie-sharing tabs, isolated SQLite and loopback proxy; no upstream models.
 const evidence = path.resolve(process.env.BIMAGE_UI_EVIDENCE || '.impeccable/review');
 mkdirSync(evidence, { recursive: true });
 const scratch = mkdtempSync(path.join(tmpdir(), 'bimage-tabs-'));
-const adminKey = 'tab-isolation-admin-fixture-only';
-const service = await createApp({ dir: scratch, adminKey });
+const adminLogin = { login: 'admin', password: 'tab-isolation-admin-fixture-only' };
+const memberLogin = { login: 'tab-member@example.test', password: 'tab-isolation-member-fixture-only' };
+const service = await createApp({ dir: scratch });
 const server = service.app.listen(0, '127.0.0.1');
 await new Promise(resolve => server.once('listening', resolve));
 const front = await serveFrontend(server);
 const base = `http://127.0.0.1:${front.address().port}`;
+const fixtureAdmin = await setupAccount(base, scratch, adminLogin.password);
+const fixtureMember = await createAccount(base, fixtureAdmin.headers, { email: memberLogin.login, password: memberLogin.password, name: '隔离测试成员' });
 const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
 const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
 const a = await context.newPage(), b = await context.newPage();
@@ -31,46 +35,39 @@ await context.route('**/*', route => {
   return route.abort();
 });
 const pass = name => { passes.push(name); console.log('PASS ' + name); };
-async function login(page, key) {
-  await expect(page.getByLabel('访问密钥')).toBeEnabled();
-  await page.getByLabel('访问密钥').fill(key);
-  await page.getByRole('button', { name: '进入', exact: true }).click();
+async function login(page, account) {
+  await expect(page.locator('input[autocomplete=username]')).toBeEnabled();
+  await page.locator('input[autocomplete=username]').fill(account.login);
+  await page.locator('input[autocomplete=current-password]').fill(account.password);
+  await page.getByRole('button', { name: '登录', exact: true }).click();
   await expect(page.getByLabel('载入工作台')).toHaveCount(0);
-  await expect(page.getByRole('button', { name: '设置', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '系统设置', exact: true })).toBeVisible();
 }
-async function keys(page) {
-  await page.getByRole('button', { name: '设置', exact: true }).click();
-  await page.getByRole('tab', { name: '密钥', exact: true }).click();
+async function users(page) {
+  await page.getByRole('button', { name: '用户管理', exact: true }).click();
 }
-const screenshot = name => a.screenshot({ path: path.join(evidence, 'tab-isolation-' + name + '.png'), fullPage: true, mask: [a.locator('.secret')] });
+const screenshot = name => a.screenshot({ path: path.join(evidence, 'tab-isolation-' + name + '.png'), fullPage: true, mask: [a.locator('input[type=password]')] });
 try {
   await a.goto(base);
-  await login(a, adminKey);
-  await keys(a);
-  await a.locator('input[name=name]').fill('隔离测试成员');
-  await a.getByRole('button', { name: '创建访问密钥', exact: true }).click();
-  const memberKey = await a.locator('.secret').textContent();
-  await a.getByRole('button', { name: '图像工作台', exact: true }).click();
+  await login(a, adminLogin);
   await a.getByLabel('提示词', { exact: true }).fill('管理员私密草稿：不得留在另一个会话');
-  await keys(a);
-  await a.locator('input[name=name]').fill('一次性私密密钥');
-  await a.getByRole('button', { name: '创建访问密钥', exact: true }).click();
-  await expect(a.locator('.secret')).toBeVisible();
+  await users(a);
+  await a.getByRole('button', { name: '创建用户', exact: true }).click();
+  await a.locator('input[autocomplete=new-password]').fill('discard-created-user-fixture');
   await b.goto(base);
   await expect(b.getByRole('button', { name: '退出登录', exact: true })).toBeVisible();
   await screenshot('before');
   await b.getByRole('button', { name: '退出登录', exact: true }).click();
-  await login(b, memberKey);
+  await login(b, memberLogin);
   await b.waitForTimeout(3000); // At least one visible-tab polling interval.
   await screenshot('after');
   await expect(a.locator('.app-shell'), 'tab A must unmount all admin/private state after tab B changes cookie identity').toHaveCount(0);
   await expect(a.getByRole('dialog')).toHaveCount(0);
-  await expect(a.locator('.secret')).toHaveCount(0);
-  await expect(a.getByLabel('访问密钥')).toBeEnabled();
+  await expect(a.locator('input[autocomplete=new-password]')).toHaveCount(0);
+  await expect(a.locator('input[autocomplete=username]')).toBeEnabled();
   await expect(b.getByLabel('提示词', { exact: true })).toHaveValue('');
-  await b.getByRole('button', { name: '设置', exact: true }).click();
-  await expect(b.getByRole('tab', { name: '密钥', exact: true })).toHaveCount(0);
-  pass('shared-cookie logout/account change clears stale admin UI, one-time key and private draft in other tab');
+  await expect(b.getByRole('button', { name: '用户管理', exact: true })).toHaveCount(0);
+  pass('shared-cookie logout/account change clears stale admin UI, pending account form and private draft in other tab');
 
   // Cookie changes without app notices must still be detected before authenticated refreshes.
   const quiet = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
@@ -82,29 +79,30 @@ try {
   q.setDefaultTimeout(8000);
   q.on('pageerror', e => errors.push(e.message));
   await q.goto(base);
-  await login(q, adminKey);
-  await keys(q);
+  await login(q, adminLogin);
+  await users(q);
   let releaseJobs, jobsHeld;
   const held = new Promise(resolve => { jobsHeld = resolve; });
   const gate = new Promise(resolve => { releaseJobs = resolve; });
-  await q.route('**/api/jobs', async route => {
+  await q.route('**/api/jobs?*', async route => {
     const response = await route.fetch();
     jobsHeld();
     await gate;
     await route.fulfill({ response }).catch(() => {});
   });
+  await q.evaluate(() => window.dispatchEvent(new Event('focus')));
   await held; // A real admin response is now in flight from the real backend.
-  await q.evaluate(async key => {
-    const response = await fetch('/api/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ key }) });
+  await q.evaluate(async account => {
+    const response = await fetch('/api/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(account) });
     if (!response.ok) throw Error('Fixture member login failed');
-  }, memberKey);
+  }, memberLogin);
   releaseJobs();
   await expect(q.locator('.app-shell'), 'a late admin refresh must re-check /me, not commit under a member cookie').toHaveCount(0, { timeout: 1200 });
-  await q.unroute('**/api/jobs');
+  await q.unroute('**/api/jobs?*');
   pass('no-notice cookie identity change rejects late authenticated refresh before committing tenant state');
 
   // Real FileReader continuation held across a logout and a new identity.
-  await login(q, adminKey);
+  await login(q, adminLogin);
   const writes = [];
   q.on('request', request => {
     if (request.method() !== 'GET' && new URL(request.url()).pathname.startsWith('/api/'))
@@ -121,7 +119,7 @@ try {
   await q.getByLabel('参考图', { exact: true }).setInputFiles(upload);
   await q.waitForFunction(() => !!window.__releaseReader);
   await q.getByRole('button', { name: '退出登录', exact: true }).click();
-  await login(q, memberKey);
+  await login(q, memberLogin);
   const beforeRelease = writes.length;
   await q.evaluate(() => window.__releaseReader());
   await q.waitForTimeout(800);
@@ -150,29 +148,28 @@ try {
   await q.getByLabel('提示词', { exact: true }).fill('过期成员私密草稿');
   await q.getByRole('button', { name: '快速生成提示词', exact: true }).click();
   await expect(q.getByRole('dialog')).toBeVisible();
-  service.db.prepare("UPDATE keys SET expires=? WHERE name=?").run('2000-01-01T00:00:00Z', '隔离测试成员');
+  service.db.prepare('UPDATE account_sessions SET expires=0 WHERE owner=?').run(fixtureMember.user.id);
   await expect(q.locator('.app-shell')).toHaveCount(0, { timeout: 10000 });
   await expect(q.getByRole('dialog')).toHaveCount(0);
-  await expect(q.getByLabel('访问密钥')).toBeEnabled();
+  await expect(q.locator('input[autocomplete=username]')).toBeEnabled();
   assert.equal(await q.evaluate(() => window.__createdURLs.length > 0 && window.__createdURLs.every(url => window.__revokedURLs.includes(url))), true);
   assert.equal(await q.evaluate(() => sessionStorage.getItem('bimage-signed-out')), 'true');
   await q.screenshot({ path: path.join(evidence, 'tab-isolation-expired-cleared.png'), fullPage: true });
-  pass('real expired-key 401 clears draft, teleported dialog, cached images/object URLs and local restore');
-  service.db.prepare("UPDATE keys SET expires=NULL WHERE name=?").run('隔离测试成员');
+  pass('real expired-session 401 clears draft, teleported dialog, cached images/object URLs and local restore');
   await quiet.close();
 
   const storageOnly = await browser.newContext();
   await storageOnly.addInitScript(() => Object.defineProperty(window, 'BroadcastChannel', { value: undefined }));
   const s1 = await storageOnly.newPage(), s2 = await storageOnly.newPage();
-  await s1.goto(base); await login(s1, adminKey);
+  await s1.goto(base); await login(s1, adminLogin);
   await s2.goto(base); await expect(s2.getByRole('button', { name: '退出登录', exact: true })).toBeVisible();
   await s2.getByRole('button', { name: '退出登录', exact: true }).click();
-  await login(s2, memberKey);
+  await login(s2, memberLogin);
   await expect(s1.locator('.app-shell')).toHaveCount(0);
   const payload = JSON.stringify({ id: 'attacker-admin', role: 'admin', csrf: 'untrusted' });
   await s1.evaluate(value => localStorage.setItem('bimage-session-change', value), payload);
   await expect(s2.locator('.app-shell')).toHaveCount(0);
-  await expect(s2.getByLabel('访问密钥')).toBeEnabled();
+  await expect(s2.locator('input[autocomplete=username]')).toBeEnabled();
   assert.equal(await s1.evaluate(() => localStorage.getItem('bimage-session-change')), payload, 'notices do not echo any secret or adopt the payload');
   await storageOnly.close();
   pass('storage-only fallback clears sibling tab; forged identity payload can only invalidate, never authenticate');

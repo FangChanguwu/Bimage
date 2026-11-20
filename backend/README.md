@@ -16,17 +16,17 @@ HOST=127.0.0.1 npm start
 - `PORT`: internal API port, default `6768`.
 - `HOST`: bind address, default `0.0.0.0`.
 - `DATA_DIR`: database directory; defaults to the repository's `data/` for `npm start`.
-- `ADMIN_KEY_FILE`: bootstrap secret output, default `$DATA_DIR/admin-key.txt`.
-- `CONCURRENCY`: workers, clamped to 1–8, default 1. Does not limit the number of enqueued images.
+- `CONCURRENCY`: site-wide simultaneous image tasks (1–8); Compose defaults to 8. Each account has its own limit. Neither limit caps the number of enqueued images.
 - `COOKIE_SECURE=true`: HTTPS-only cookies. Leave unset for local HTTP tests.
+- `TRUSTED_WEB_PROXY_IP`: optional exact socket address of the private web proxy. Only that peer can provide the client IP for rate limits. Leave unset for direct API access. Configure nginx to trust only the ingress peer in `bimage-ingress*.inc` and have that ingress overwrite `X-Real-IP`; do not enable this on a publicly reachable backend.
 
-When no `studio.sqlite` exists, the runtime generates an administrator secret into a new 0600 file. It refuses to overwrite an existing bootstrap file. When the database already exists, the bootstrap file is neither read nor written: administrator rotation stored in SQLite remains authoritative, including with obsolete/read-only secret mounts.
+Before the first account is configured, read the one-time setup code from `$DATA_DIR/setup-code.txt` (0600) via a trusted server session. Enter it in the web setup form and choose the password for `admin`. The code is not a password and cannot be reused. No self-registration is available.
 
-Use a same-origin reverse proxy on external port 6767, preserving the original Host header. `/api/*` and `/health` belong to this service. This backend does not configure or deploy the proxy. No credentials are logged. Bare HTTP does not protect access keys in transit.
+Use a same-origin HTTPS reverse proxy preserving the original Host header, and bind the Compose web upstream to loopback on production hosts. `/api/*` and `/health` belong to this service. Bare HTTP does not protect login credentials or the setup code.
 
 ## Compatibility and migration
 
-Database filename, table names, original columns, identity IDs, hashes, session cookies, provider ownership/shared flags, settings JSON, asset bytes, jobs and task forms retain the legacy schema. Only missing metadata columns and the unique-admin partial index are added. Multiple legacy administrators cause startup refusal without selecting or disabling anyone. Prepare an explicit offline migration rather than silently selecting an administrator.
+Back up SQLite and drain the image queue before upgrading an existing site. Migration refuses to proceed while legacy tasks are queued or running. Old key login, Bearer authentication and legacy sessions are disabled. The initial `admin` keeps the previous administrator's identity and data. Legacy member data remains stored but inactive; the retired workspace-association feature is not available, and newly created users always receive new identities. Nothing changes the ownership of providers, settings, jobs or assets during account migration.
 
 Site defaults are `title: "Bimage"`, `icon: "/Bimage.png"`. The exact legacy default title `Bi.mage` is mapped to `Bimage` on public reads; custom titles/icons are preserved. This mapping does not rewrite the stored site JSON. Empty icons resolve to the new default logo. Administrative site updates still allow custom PNG/JPEG/WebP data URIs.
 
@@ -37,7 +37,7 @@ The persistent queue stores every requested task and submits `n: 1` per image. O
 ## Modules
 
 - `app.ts`: middleware and composition, public factory and lifecycle.
-- `auth.ts`: session/CSRF/logout, administrator survival and transactional custom-key rotation.
+- `auth.ts`: administrator setup, account login, session/CSRF/logout and administrative user management.
 - `db.ts`: compatible SQLite schema and typed query boundary.
 - `providers.ts`, `models.ts`: secret-safe catalog and shared-provider management.
 - `network.ts`: DNS-checked/pinned requests, redirect denial, bounded streaming.
@@ -47,4 +47,4 @@ The persistent queue stores every requested task and submits `n: 1` per image. O
 - `settings.ts`: site branding and tenant settings.
 - `contracts/`: frontend-compatible API types and the single shared 16-reference limit.
 
-Programmatic integration: `createApp({dir, adminKey, worker, concurrency, retryMs})` returns `{app, db, close}`. `close()` stops scheduling immediately and returns a promise that resolves after requests unwind and SQLite closes. Await it when an active service will immediately be reopened. `worker: false` allows deterministic queue/recovery inspection.
+Programmatic integration: `createApp({dir, worker, concurrency, retryMs})` returns `{app, db, close}`. `close()` stops scheduling immediately and returns a promise that resolves after requests unwind and SQLite closes. Await it when an active service will immediately be reopened. `worker: false` allows deterministic queue/recovery inspection.

@@ -11,10 +11,12 @@ const image = ref<HTMLImageElement>(),
   src = ref(""),
   error = ref(false);
 let observer: IntersectionObserver | undefined,
-  held = "",
-  generation = 0;
+  held = "";
+let heldCache: ReturnType<typeof assetCache> | undefined;
+let heldVariant: "original" | "thumbnail" = "thumbnail";
+let generation = 0;
 function release() {
-  if (held) assetCache(props.signal).release(held);
+  if (held) heldCache?.release(held, heldVariant);
   held = "";
   src.value = "";
   generation++;
@@ -26,9 +28,10 @@ async function load() {
   held = id;
   try {
     const cache = assetCache(props.signal);
-    const entry = await cache.acquire(id);
-    const url = props.original ? entry.url : await cache.thumbnail(entry);
-    if (version === generation) src.value = url;
+    heldCache = cache;
+    heldVariant = props.original ? "original" : "thumbnail";
+    const entry = await cache.acquire(id, heldVariant);
+    if (version === generation) src.value = entry.url;
   } catch {
     if (version === generation) error.value = true;
   }
@@ -44,7 +47,7 @@ onMounted(() => {
   if (image.value) observer.observe(image.value);
 });
 watch(
-  () => props.asset,
+  () => [props.asset, props.original, props.signal],
   () => {
     release();
     error.value = false;

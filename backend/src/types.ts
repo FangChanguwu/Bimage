@@ -1,10 +1,17 @@
-export interface KeyRow {
+export interface IdentityBase {
   id: string;
-  hash: string;
   name: string;
   role: "admin" | "user";
-  disabled: number;
-  expires: string | null;
+}
+export interface Account extends IdentityBase {
+  email: string;
+  concurrency: number;
+}
+export interface AccountRow extends Account {
+  passwordHash: string;
+}
+export interface Identity extends Account {
+  csrf: string;
 }
 export interface SessionRow {
   hash: string;
@@ -19,7 +26,7 @@ export interface ProviderRow {
   baseUrl: string;
   apiKey: string;
   kind: string;
-  allowPrivate: number;
+
   models: string;
   shared: number;
 }
@@ -75,11 +82,10 @@ export interface ProviderConfig {
   baseUrl: string;
   apiKey: string;
   kind: string;
-  allowPrivate: boolean | number;
+
 }
 export interface AppOptions {
   dir?: string;
-  adminKey?: string;
   worker?: boolean;
   concurrency?: number;
   retryMs?: number;

@@ -1,4 +1,5 @@
 import { chromium, expect } from '@playwright/test';
+import { loopbackProvider } from './loopback-provider.js';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
@@ -6,13 +7,16 @@ import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { createApp } from '../backend/dist/app.js';
 import { serveFrontend } from './frontend-server.js';
+import { request, setupAccount } from './account-fixture.js';
 
 // Only a fresh scratch database and loopback upstream are used. No production env,
 // credentials, provider or Docker process is read or changed by this test.
 const evidence = path.resolve(process.env.BIMAGE_UI_EVIDENCE || '.impeccable/review');
 mkdirSync(evidence, { recursive: true });
 const scratch = mkdtempSync(path.join(tmpdir(), 'bimage-integration-'));
-const adminKey = 'integration-admin-fixture-only';
+const adminPassword = 'integration-admin-fixture-only';
+const memberLogin = 'integration-member@example.test';
+const memberPassword = 'integration-member-fixture-only';
 let png, calls = [], rewrites = [], modelCalls = 0, active = 0, maxActive = 0;
 const mock = createServer(async (q, r) => {
   let raw = '';
@@ -40,11 +44,13 @@ const mock = createServer(async (q, r) => {
   r.end(JSON.stringify({ data: [{ b64_json: png }] }));
 });
 await new Promise(resolve => mock.listen(0, '127.0.0.1', resolve));
-const service = await createApp({ dir: scratch, adminKey, concurrency: 1 });
+const service = await createApp({ dir: scratch, concurrency: 1, providerNetwork: loopbackProvider(mock) });
 const apiServer = service.app.listen(0, '127.0.0.1');
 await new Promise(resolve => apiServer.once('listening', resolve));
 const front = await serveFrontend(apiServer);
 const base = `http://127.0.0.1:${front.address().port}`;
+const initial = await setupAccount(base, scratch, adminPassword);
+assert.equal((await request(base, '/api/logout', { body: {}, headers: initial.headers })).status, 200);
 const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
 const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, acceptDownloads: true });
 const page = await context.newPage();
@@ -57,7 +63,8 @@ page.on('response', response => {
 });
 page.on('request', request => {
   const pathname = new URL(request.url()).pathname;
-  if (request.method() === 'GET' && pathname.startsWith('/api/assets/')) assets.set(pathname, (assets.get(pathname) || 0) + 1);
+  const key = pathname + new URL(request.url()).search;
+  if (request.method() === 'GET' && pathname.startsWith('/api/assets/')) assets.set(key, (assets.get(key) || 0) + 1);
 });
 await context.route('**/*', route => {
   const url = route.request().url();
@@ -71,14 +78,15 @@ const api = (pathname) => page.evaluate(async pathname => {
   const r = await fetch('/api' + pathname);
   return { status: r.status, body: await r.json() };
 }, pathname);
-async function login(key) {
-  await page.getByRole('textbox', { name: '访问密钥' }).fill(key);
-  await page.getByRole('button', { name: '进入', exact: true }).click();
-  await expect(page.getByRole('button', { name: '设置', exact: true })).toBeVisible();
+async function login(account, password) {
+  await page.locator('input[autocomplete=username]').fill(account);
+  await page.locator('input[autocomplete=current-password]').fill(password);
+  await page.getByRole('button', { name: '登录', exact: true }).click();
+  await expect(page.getByRole('button', { name: '系统设置', exact: true })).toBeVisible();
   await expect(page.getByLabel('载入工作台')).toHaveCount(0);
 }
 async function settings(tab) {
-  await page.getByRole('button', { name: '设置', exact: true }).click();
+  await page.getByRole('button', { name: '系统设置', exact: true }).click();
   if (tab) await page.getByRole('tab', { name: tab, exact: true }).click();
 }
 const studio = () => page.getByRole('button', { name: '图像工作台', exact: true }).click();
@@ -92,11 +100,12 @@ async function savedForm(check) {
 }
 try {
   await page.goto(base + '/');
-  await expect(page.getByRole('textbox', { name: '访问密钥' })).toBeEnabled();
-  await page.getByRole('textbox', { name: '访问密钥' }).fill('wrong-fixture-key');
-  await page.getByRole('button', { name: '进入', exact: true }).click();
-  await expect(page.getByRole('alert')).toContainText('密钥');
-  await login(adminKey);
+  await expect(page.locator('input[autocomplete=username]')).toBeEnabled();
+  await page.locator('input[autocomplete=username]').fill('admin');
+  await page.locator('input[autocomplete=current-password]').fill('wrong-fixture-password');
+  await page.getByRole('button', { name: '登录', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('密码');
+  await login('admin', adminPassword);
   const admin = (await api('/me')).body;
   assert.equal(admin.role, 'admin');
   pass('real same-origin login, invalid login, cookie and CSRF session');
@@ -112,14 +121,14 @@ try {
   await page.locator('input[name=name]').fill('本地混合模型');
   await page.locator('input[name=baseUrl]').fill(`http://127.0.0.1:${mock.address().port}/v1`);
   await page.locator('input[name=apiKey]').fill('local-mock-only');
-  await page.getByText('高级配置', { exact: true }).click();
-  await page.locator('input[name=allowPrivate]').check();
+  await expect(page.getByText('高级配置', { exact: true })).toHaveCount(0);
   const sharing = page.getByRole('switch', { name: '开放共享供应商' });
   await sharing.click();
   await expect(sharing).toHaveAttribute('aria-checked', 'true');
   await page.getByRole('button', { name: '获取模型', exact: true }).click();
-  await page.getByLabel('unknown-model 用途', { exact: true }).click();
-  await page.getByRole('option', {name:'图像 + 文本', exact:true}).click();
+  const unknown = page.getByRole('switch', { name: 'unknown-model 用途', exact: true });
+  await expect(unknown).toHaveAttribute('aria-checked', 'false');
+  await unknown.click();
   await page.getByRole('button', { name: '保存供应商', exact: true }).click();
   await expect(page.locator('.provider-row')).toHaveCount(1);
   const provider = (await api('/providers')).body[0];
@@ -131,15 +140,17 @@ try {
   await page.getByRole('button', { name: '编辑', exact: true }).click();
   await expect(page.locator('input[name=apiKey]')).toHaveValue('');
   await page.getByRole('button', { name: '获取模型', exact: true }).click();
-  await expect(page.getByLabel('gpt-4.1 用途', { exact: true })).toHaveAttribute('data-value', 'text');
+  await expect(page.getByRole('switch', { name: 'gpt-4.1 用途', exact: true })).toHaveAttribute('aria-checked', 'false');
+  await expect(unknown).toHaveAttribute('aria-checked', 'true');
   await page.getByRole('button', { name: '保存修改', exact: true }).click();
   await expect(page.getByRole('dialog')).toHaveCount(0);
   assert.equal(modelCalls, 2);
   assert.equal(service.db.prepare('SELECT apiKey FROM providers WHERE id=?').get(provider.id).apiKey, 'local-mock-only');
   pass('saved provider rediscovery and blank API key preservation');
-  await settings('默认模型');
-  await pick('默认图像模型', 'gpt-image-1');
-  await pick('文本模型', 'gpt-4.1');
+  await settings('供应商');
+  await pick('生图模型', 'gpt-image-1');
+  await pick('快速提示词', 'gpt-4.1');
+  await pick('提示词优化', 'gpt-4.1');
   await page.getByRole('button', { name: '保存默认模型', exact: true }).click();
   await expect.poll(async () => (await api('/settings')).body.imageModel).toBe('gpt-image-1');
   await studio();
@@ -203,7 +214,8 @@ try {
   const job = jobs[0], asset = job.tasks[0].asset;
   await expect(page.locator('.actual-spec').first()).toHaveText('160 × 96');
   const assetUrl = '/api/assets/' + asset;
-  assert.equal(assets.get(assetUrl), 1);
+  assert.equal(assets.get(assetUrl + '?variant=thumbnail'), 1);
+  assert.equal(assets.get(assetUrl) || 0, 0);
   await page.getByRole('button', { name: '查看图片', exact: true }).first().click();
   const lightbox = page.getByRole('dialog', { name: '图片预览' });
   await expect(lightbox.locator('img')).toBeVisible();
@@ -229,7 +241,7 @@ try {
   pass('retry restores exact multiline prompt/references without generation; explicit clear persists');
   await page.getByLabel('提示词', { exact: true }).fill('保留最新草稿，不应被默认模型保存覆盖');
   await savedForm({ prompt: '保留最新草稿，不应被默认模型保存覆盖' });
-  await settings('默认模型');
+  await settings('供应商');
   await page.getByRole('button', { name: '保存默认模型', exact: true }).click();
   await expect(page.locator('.toast[data-type="success"]')).toContainText('默认模型已保存');
   await page.reload();
@@ -264,7 +276,7 @@ try {
   await expect(page.locator('.site-icon-preview')).toHaveAttribute('src', 'data:image/png;base64,' + png);
   await page.getByRole('button', { name: '保存站点设置', exact: true }).click();
   await expect.poll(async () => (await api('/site')).body.title).toBe('Bimage 集成验证');
-  await expect(page).toHaveTitle('Bimage 集成验证 | 设置');
+  await expect(page).toHaveTitle('Bimage 集成验证 | 系统设置');
   await expect(page.locator('link[rel=icon]')).toHaveAttribute('href', 'data:image/png;base64,' + png);
   await shot('settings-icon');
   await page.getByRole('button', { name: '恢复默认图标', exact: true }).click();
@@ -281,30 +293,36 @@ try {
   await page.locator('.history').scrollIntoViewIfNeeded();
   await expect.poll(() => page.locator('.result-images img').evaluateAll(images => images.length === 4 && images.every(image => image.complete && image.naturalWidth > 0))).toBe(true);
   await shot('mobile-results');
-  await settings('密钥');
-  await page.locator('input[name=name]').fill('隔离成员');
-  await page.getByRole('button', { name: '创建访问密钥', exact: true }).click();
-  await expect(page.locator('.secret')).toBeVisible();
-  const memberKey = await page.locator('.secret').textContent();
+  // Pause polling before the account-management phase so the real 180/min
+  // middleware remains enabled without racing the earlier workbench burst.
+  await page.route('**/api/jobs', route => route.abort());
+  await page.waitForTimeout(61000);
+  await page.unroute('**/api/jobs');
+  await page.getByRole('button', { name: '用户管理', exact: true }).click();
+  await page.getByRole('button', { name: '创建用户', exact: true }).click();
+  await page.locator('input[type=email]').fill(memberLogin);
+  await page.locator('input[autocomplete=new-password]').fill(memberPassword);
+  await page.getByLabel('用户名', { exact: false }).fill('隔离成员');
+  const memberResponse = page.waitForResponse(r => r.url() === base + '/api/admin/users' && r.request().method() === 'POST');
+  await page.locator('form button[type=submit]').click();
+  assert.equal((await memberResponse).status(), 201);
+  await expect(page.locator('.account-list').getByText(memberLogin, { exact: true })).toBeVisible();
   await studio();
   await page.getByLabel('提示词', { exact: true }).fill('管理员私密草稿');
   const logoutResponse = page.waitForResponse(r => r.url() === base + '/api/logout');
   await page.getByRole('button', { name: '退出登录', exact: true }).click();
   assert.equal((await logoutResponse).status(), 200);
-  await expect(page.getByRole('button', { name: '进入', exact: true })).toBeEnabled();
+  await expect(page.getByRole('button', { name: '登录', exact: true })).toBeEnabled();
   assert.equal((await context.cookies()).filter(c => c.name === 'canvas_session').length, 0);
-  assert.equal(service.db.prepare('SELECT count(*) n FROM sessions WHERE owner=?').get(admin.id).n, 0);
+  assert.equal(service.db.prepare('SELECT count(*) n FROM account_sessions WHERE owner=?').get(admin.id).n, 0);
   await expect(page.getByRole('alert')).toHaveCount(0);
   await page.reload();
-  await expect(page.getByRole('button', { name: '进入', exact: true })).toBeEnabled();
-  // Keep every assertion and the real 180/min middleware. The full admin
-  // interaction suite intentionally performs a burst of requests; start the
-  // independent member checks after that window while logged out (no polling).
-  await page.waitForTimeout(61000);
-  await login(memberKey);
+  await expect(page.getByRole('button', { name: '登录', exact: true })).toBeEnabled();
+  await login(memberLogin, memberPassword);
   await expect(page.getByLabel('提示词', { exact: true })).toHaveValue('');
   await expect(page.locator('.job')).toHaveCount(0);
-  await expect(page.locator('.secret')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '用户管理', exact: true })).toHaveCount(0);
+  assert.equal((await api('/admin/users')).status, 403);
   await expect(page.locator('.composer .references img')).toHaveCount(0);
   assert.equal((await api('/assets/' + reference)).status, 404);
   assert.equal((await api('/assets/' + asset)).status, 404);
@@ -313,11 +331,11 @@ try {
   assert.equal(shared.canManage, false);
   await settings('供应商');
   await expect(page.getByRole('button', { name: '编辑', exact: true })).toHaveCount(0);
-  await expect(page.getByRole('tab', { name: '密钥', exact: true })).toHaveCount(0);
+
   pass('390px layout, normal logout 200 revokes cookie/DB session, reload remains logged out, tenant and shared-provider isolation');
   await page.getByRole('button', { name: '退出登录' }).click();
-  await expect(page.getByRole('button', { name: '进入', exact: true })).toBeEnabled();
-  await login(adminKey);
+  await expect(page.getByRole('button', { name: '登录', exact: true })).toBeEnabled();
+  await login('admin', adminPassword);
   await page.getByRole('button', { name: '删除', exact: true }).click();
   const deletion = page.getByRole('dialog', { name: '删除任务' });
   const deleted = page.waitForResponse(r => r.url() === base + '/api/jobs/' + job.id && r.request().method() === 'DELETE');

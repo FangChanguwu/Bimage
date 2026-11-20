@@ -26,7 +26,6 @@ function privateIP(address: string): boolean {
 }
 export async function validateUrl(
   raw: string,
-  allow = false,
   resultUrl = false,
 ) {
   let url: URL;
@@ -50,9 +49,9 @@ export async function validateUrl(
     : await lookup(host, { all: true });
   if (
     !addresses.length ||
-    (!allow && addresses.some((item) => privateIP(item.address)))
+    addresses.some((item) => privateIP(item.address))
   )
-    throw fail(400, "不允许私网地址；需管理员明确授权");
+    throw fail(400, "不允许使用私网地址，请填写公网 URL");
   return { url, addresses };
 }
 /** Enforce the cap while streaming, regardless of a missing/incorrect Content-Length. */
@@ -75,12 +74,20 @@ export async function limited(
     }
   return Buffer.concat(chunks);
 }
-export async function safeFetch(
+export function createProviderNetwork(validate = validateUrl) {
+  return {
+    validate,
+    fetch: (url: string, options?: RequestInit) => safeFetch(url, options, validate),
+  };
+}
+export type ProviderNetwork = ReturnType<typeof createProviderNetwork>;
+
+async function safeFetch(
   url: string,
   options: RequestInit = {},
-  allow = false,
+  validate: typeof validateUrl,
 ): Promise<Response> {
-  const { addresses } = await validateUrl(url, allow, true);
+  const { addresses } = await validate(url, true);
   // Pin exactly the addresses checked above. Never resolve again at connection time.
   const dispatcher = new Agent({
     connect: {
@@ -112,13 +119,14 @@ export async function safeFetch(
   }
 }
 export async function upstream(
+  network: ProviderNetwork,
   provider: ProviderConfig,
   endpoint: string,
   payload?: Record<string, unknown> | FormData,
   signal?: AbortSignal,
 ): Promise<Record<string, unknown>> {
   const multipart = payload instanceof FormData;
-  const response = await safeFetch(
+  const response = await network.fetch(
     provider.baseUrl + endpoint,
     {
       method: payload ? "POST" : "GET",
@@ -135,7 +143,6 @@ export async function upstream(
         : undefined,
       signal,
     },
-    !!provider.allowPrivate,
   );
   if (!response.ok) throw fail(response.status, "上游 HTTP " + response.status);
   return object(await response.json());

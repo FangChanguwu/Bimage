@@ -61,7 +61,7 @@ async function generate() {
   busy.value = true;
   try {
     await props.run(async () => {
-      result.value = await rewritePrompt(props.api, props.settings, intent.value, references.value, signal);
+      result.value = await rewritePrompt(props.api, props.settings, intent.value, references.value, signal, "quick");
     });
   } finally {
     busy.value = false;
@@ -71,7 +71,7 @@ async function generate() {
 <template>
   <Modal title="快速生成提示词" :locked="busy" @close="close"
     ><p class="muted">
-      用默认文本模型补写提示词，不会直接生成图片。参考图需要模型支持视觉输入。
+      用快速提示词模型补写提示词，不会直接生成图片。参考图需要模型支持视觉输入。
     </p>
     <label
       >简短意图<textarea
@@ -107,9 +107,9 @@ async function generate() {
     />
     <p class="muted">
       {{
-        settings.textModel
-          ? "默认文本模型 · " + settings.textModel
-          : "请先在设置中配置默认文本模型"
+        settings.quickModel
+          ? "快速提示词模型 · " + settings.quickModel
+          : "请先在供应商设置中配置快速提示词模型"
       }}
     </p>
     <button
@@ -117,8 +117,8 @@ async function generate() {
         busy ||
         refs.pending.value ||
         !intent.trim() ||
-        !settings.textProvider ||
-        !settings.textModel
+        !settings.quickProvider ||
+        !settings.quickModel
       "
       @click="generate"
     >

@@ -24,10 +24,15 @@ async function mockStudio(page: Page, jobs: object[] = [], assets = new Map<stri
       return route.fulfill({ contentType: "image/png", body: asset });
     switch (path) {
       case "/api/site": return route.fulfill({ json: { title: "Bimage" } });
+      case "/api/setup": return route.fulfill({ json: { required: false } });
       case "/api/me": return route.fulfill({ json: { id: "demo", name: "Demo", role: "member", csrf: "fixture" } });
       case "/api/providers": return route.fulfill({ json: [{ id: "p", name: "Studio", owner: "demo", models: [{ id: "image-model", types: ["image"] }] }] });
       case "/api/settings": return route.fulfill({ json: {} });
-      case "/api/jobs": return route.fulfill({ json: jobs });
+      case "/api/jobs": {
+        const query = new URL(route.request().url()).searchParams.get('q') || '';
+        const items = jobs.filter(job => String((job as {form?:{prompt?:string}}).form?.prompt || '').toLowerCase().includes(query.toLowerCase()));
+        return route.fulfill({ json: { items, total: items.length, nextCursor: null, token: JSON.stringify(items), unchanged: false, active: false } });
+      }
       default: return route.fulfill({ status: 404, json: { error: "Unexpected fixture request" } });
     }
   });

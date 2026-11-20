@@ -1,3 +1,58 @@
+import { test } from 'node:test';
+import { loopbackProvider } from './loopback-provider.js';
+import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
-import {test} from 'node:test';import assert from 'node:assert/strict';import {createServer} from 'node:http';import {mkdtempSync} from 'node:fs';import path from 'node:path';import {createApp} from '../backend/dist/app.js';
-test('text request disconnect cancels upstream rather than completing an old session',async()=>{let started,closed;const seen=new Promise(r=>started=r),ended=new Promise(r=>closed=r);const mock=createServer((q,r)=>{q.resume();started();r.on('close',closed);});await new Promise(r=>mock.listen(0,'127.0.0.1',r));const s=await createApp({dir:mkdtempSync(path.join(tmpdir(),'rewrite-cancel-')),adminKey:'test',worker:false});const server=s.app.listen(0,'127.0.0.1');await new Promise(r=>server.once('listening',r));const base=`http://127.0.0.1:${server.address().port}/api`,headers={authorization:'Bearer test','content-type':'application/json'};try{const p=await fetch(base+'/providers',{method:'POST',headers,body:JSON.stringify({name:'mock',baseUrl:`http://127.0.0.1:${mock.address().port}`,apiKey:'mock',allowPrivate:true})}).then(r=>r.json());const c=new AbortController();const pending=fetch(base+'/rewrite',{method:'POST',headers,body:JSON.stringify({providerId:p.id,model:'vision',prompt:'test'}),signal:c.signal}).catch(e=>e);await seen;c.abort();assert.equal((await pending).name,'AbortError');await Promise.race([ended,new Promise((_,reject)=>setTimeout(()=>reject(Error('upstream not aborted')),2000))]);}finally{await new Promise(r=>server.close(r));s.close();await new Promise(r=>mock.close(r));}});
+import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
+import { createApp } from '../backend/dist/app.js';
+import { request, setupAccount } from './account-fixture.js';
+
+test('text request disconnect cancels upstream rather than completing an old session', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'bimage-rewrite-cancel-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const seen = Promise.withResolvers();
+  const ended = Promise.withResolvers();
+  const mock = createServer((req, res) => {
+    req.resume();
+    res.once('close', ended.resolve);
+    seen.resolve();
+  });
+  await new Promise(resolve => mock.listen(0, '127.0.0.1', resolve));
+  const s = await createApp({ dir, worker: false, providerNetwork: loopbackProvider(mock) });
+  const server = s.app.listen(0, '127.0.0.1');
+  await new Promise(resolve => server.once('listening', resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const controller = new AbortController();
+  const timers = new AbortController();
+  const timeout = (message) => delay(3000, undefined, { signal: timers.signal }).then(() => assert.fail(message));
+  try {
+    const { headers } = await setupAccount(base, dir);
+    const created = await request(base, '/api/providers', {
+      headers, body: { name: 'mock', baseUrl: `http://127.0.0.1:${mock.address().port}`, apiKey: 'mock', allowPrivate: true },
+    });
+    assert.equal(created.status, 200);
+    const provider = await created.json();
+    const pending = fetch(base + '/api/rewrite', {
+      method: 'POST', headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify({ providerId: provider.id, model: 'vision', prompt: 'test' }),
+      signal: controller.signal,
+    }).then(response => ({ response }), error => ({ error }));
+    await Promise.race([
+      seen.promise,
+      pending.then(({ response, error }) => assert.fail(`rewrite ended before reaching upstream: ${response?.status ?? error}`)),
+      timeout('rewrite never reached upstream'),
+    ]);
+    controller.abort();
+    assert.equal((await pending).error?.name, 'AbortError');
+    await Promise.race([ended.promise, timeout('upstream not aborted')]);
+  } finally {
+    timers.abort();
+    controller.abort();
+    mock.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+    await s.close();
+    await new Promise(resolve => mock.close(resolve));
+  }
+});

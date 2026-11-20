@@ -3,17 +3,19 @@ import rateLimit from "express-rate-limit";
 import { Assets, imageType } from "./assets.js";
 import { Providers } from "./providers.js";
 import { body, fail, HttpError, object, user } from "./http.js";
-import { upstream } from "./network.js";
+
 import { MAX_REFERENCE_IMAGES } from "./limits.js";
+import type { ClientRateLimitKey } from "./client-rate-limit.js";
 
 export function mountRewrite(
   app: Express,
   providers: Providers,
   assets: Assets,
+  keyGenerator: ClientRateLimitKey,
 ): void {
   app.post(
     "/api/rewrite",
-    rateLimit({ windowMs: 60000, limit: 20 }),
+    rateLimit({ keyGenerator, windowMs: 60000, limit: 20 }),
     async (request, response) => {
       const input = body(request),
         identity = user(request),
@@ -54,7 +56,7 @@ export function mountRewrite(
         abort = () => controller.abort();
       response.once("close", abort);
       try {
-        const result = await upstream(
+        const result = await providers.request(
           provider,
           "/chat/completions",
           {

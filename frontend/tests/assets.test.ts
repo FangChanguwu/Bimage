@@ -9,6 +9,7 @@ it("deduplicates original fetches per session and revokes on logout", async () =
   const cache = assetCache(c.signal);
   const [a, b] = await Promise.all([cache.get("a"), cache.get("a")]);
   expect(a).toBe(b);
+  expect(await cache.get("a")).toBe(a);
   expect(fetcher).toHaveBeenCalledTimes(1);
   c.abort();
   expect(revoke).toHaveBeenCalledWith(a.url);
@@ -32,6 +33,27 @@ it("asset authentication failure invalidates the owning lifetime and revokes cac
   revoke.mockRestore();
 });
 
+it.each([
+  { count: 25, size: 1, label: "24 entries" },
+  { count: 3, size: 22 * 1024 * 1024, label: "64 MiB" },
+])("memory trimming respects $label while keeping acquired originals", async ({ count, size }) => {
+  const blob = new Blob([new Uint8Array(size)]);
+  const fetcher = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(blob));
+  const revoke = vi.spyOn(URL, "revokeObjectURL");
+  const controller = new AbortController();
+  try {
+    const cache = assetCache(controller.signal);
+    const pinned = await cache.acquire("pinned");
+    const oldest = await cache.get("oldest");
+    for (let i = 2; i < count; i++) await cache.get(`extra-${i}`);
+    cache.trim();
+    expect(revoke).toHaveBeenCalledWith(oldest.url);
+    expect(revoke).not.toHaveBeenCalledWith(pinned.url);
+    expect(await cache.get("pinned")).toBe(pinned);
+    expect(await cache.get("oldest")).not.toBe(oldest);
+    expect(fetcher).toHaveBeenCalledTimes(count + 1);
+  } finally { controller.abort(); fetcher.mockRestore(); revoke.mockRestore(); }
+});
 it("evicts deleted originals without restoring an in-flight asset", async () => {
   const reply = () => new Response(new Blob(["png"], { type: "image/png" }));
   let finish!: (response: Response) => void;

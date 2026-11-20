@@ -299,7 +299,7 @@ label textarea {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 32px 20px 80px;
+  padding: 60px 20px 46px;
 }
 .login-theme {
   position: absolute;
@@ -312,40 +312,40 @@ label textarea {
   object-fit: contain;
   margin-bottom: 16px;
 }
-.login h1 {
+.login-brand {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  max-width: 100%;
+  margin-bottom: 24px;
+}
+.login-brand h1 {
   font-size: 30px;
   font-weight: 650;
   letter-spacing: -0.035em;
-  margin-bottom: 32px;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
-.login-form {
-  display: flex;
-  align-items: center;
-  width: min(400px, 100%);
-  gap: 8px;
-  padding: 7px;
-  border-radius: 99px;
-  border: 1px solid var(--line);
-  background: var(--surface);
-  box-shadow: var(--shadow);
+.login-version {
+  flex: none;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
 }
-.login-form input {
-  border: 0;
-  background: transparent;
-  border-radius: 99px;
-  height: 42px;
-  padding-left: 16px;
+.login-setup .login-logo {
+  width: 88px;
+  height: 88px;
+  margin-bottom: 8px;
 }
-.login-form button {
-  border-radius: 99px;
-  min-height: 42px;
-  padding: 10px 20px;
-}
-.login-error {
+.login-setup { padding-block: 28px; }
+.login-setup .login-brand { margin-bottom: 16px; }
+.login-status {
+  display: grid;
+  justify-items: center;
+  gap: 12px;
   font-size: 13px;
   color: var(--danger);
   max-width: 400px;
-  margin-top: 22px;
   text-align: center;
 }
 .app-shell {
@@ -1009,6 +1009,9 @@ label textarea {
 .settings-section form {
   margin-top: 22px;
 }
+.provider-settings .section-head {
+  margin-bottom: 16px;
+}
 .provider-row {
   display: flex;
   align-items: center;
@@ -1049,20 +1052,7 @@ label textarea {
   background: var(--field);
   color: var(--muted);
 }
-.settings-note {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  max-width: 870px;
-  color: var(--muted);
-  font-size: 11px;
-  margin-top: 18px;
-  padding-left: 6px;
-}
-.settings-note svg {
-  flex: none;
-  margin-top: 2px;
-}
+
 .inline-empty {
   display: flex;
   flex-direction: column;
@@ -1073,25 +1063,25 @@ label textarea {
   color: var(--muted);
   font-size: 13px;
 }
-.switch-row {
+.provider-form .switch-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 15px;
-  margin: 23px 0;
+  margin: 16px 0;
 }
-.switch-row strong {
+.provider-form .switch-row strong {
   font-size: 13px;
   font-weight: 550;
 }
-.switch-row small {
+.provider-form .switch-row small {
   display: block;
   margin-top: 4px;
 }
-.switch {
-  width: 40px;
-  height: 24px;
-  min-height: 24px;
+.provider-form button.switch {
+  width: 44px;
+  height: 26px;
+  min-height: 26px;
   padding: 3px;
   border: 0;
   border-radius: 99px;
@@ -1099,53 +1089,65 @@ label textarea {
   flex: none;
   justify-content: flex-start;
 }
-.switch span {
-  width: 18px;
-  height: 18px;
+.provider-form .switch span {
+  flex: none;
+  width: 20px;
+  height: 20px;
   border-radius: 50%;
   background: #fff;
   box-shadow: 0 1px 3px #0002;
   transition: transform 180ms ease;
 }
-.switch[aria-checked="true"] {
+.provider-form .switch:hover:not(:disabled) {
+  background: var(--muted);
+}
+.provider-form .switch[aria-checked="true"] {
   background: var(--accent);
 }
-.switch[aria-checked="true"] span {
-  transform: translateX(16px);
+.provider-form .switch[aria-checked="true"]:hover:not(:disabled) {
+  background: var(--accent-hover);
 }
-.provider-form details {
-  font-size: 12px;
-  color: var(--muted);
-  margin: 20px 0;
+.provider-form .switch[aria-checked="true"] span {
+  transform: translateX(18px);
 }
-.provider-form summary {
-  cursor: pointer;
-  margin-bottom: 12px;
+.provider-models {
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+.provider-models-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.provider-models-head small {
+  margin-inline-start: 6px;
+  font-weight: 400;
 }
 .model-catalog {
-  margin-top: 20px;
-  max-height: 260px;
-  overflow: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 .catalog-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 130px;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 10px;
   border-top: 1px solid var(--line);
-  padding: 12px 0;
+  padding: 6px 0;
   align-items: center;
 }
 .catalog-row strong {
   font-size: 12px;
   overflow-wrap: anywhere;
 }
-.catalog-row small {
-  display: block;
-  font-size: 10px;
-}
-.catalog-row select {
-  font-size: 11px;
-  height: 36px;
+.catalog-purpose {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
 }
 .site-icon-row {
   display: flex;
@@ -1182,45 +1184,6 @@ button.text-button {
   justify-content: flex-start;
   margin-top: 32px;
 }
-.key-create {
-  padding-top: 22px;
-  border-top: 1px solid var(--line);
-}
-.key-create h3 {
-  margin-bottom: 18px;
-}
-.key-list {
-  margin-top: 24px;
-}
-.key-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
-  padding: 18px 0;
-  border-top: 1px solid var(--line);
-}
-.key-row strong {
-  font-size: 13px;
-}
-.key-row small {
-  display: block;
-  margin-top: 4px;
-}
-.one-time-key {
-  margin-top: 22px;
-  padding: 18px;
-  border-radius: 10px;
-  border: 1px solid var(--line);
-  background: var(--accent-soft);
-  font-size: 12px;
-}
-.secret {
-  display: block;
-  overflow-wrap: anywhere;
-  white-space: pre-wrap;
-  margin: 12px 0;
-}
 .dialog {
   padding: 0;
   width: min(560px, calc(100% - 40px));
@@ -1234,6 +1197,12 @@ button.text-button {
 }
 .dialog.wide {
   width: min(1000px, calc(100% - 48px));
+}
+.dialog:has(.provider-form) {
+  width: 72vw;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scroll-padding-top: 76px;
 }
 .dialog::backdrop {
   background: rgba(23, 20, 34, 0.44);
@@ -1612,11 +1581,10 @@ button.text-button {
   .site-save {
     margin-top: 27px;
   }
-  .key-create .field-grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
+
   .dialog,
-  .dialog.wide {
+  .dialog.wide,
+  .dialog:has(.provider-form) {
     width: calc(100% - 20px);
     max-height: calc(100svh - 24px);
     border-radius: 14px;
@@ -1667,7 +1635,11 @@ button.text-button {
     min-width: 0;
   }
   .login {
-    padding-inline: 22px;
+    padding: 52px 20px 28px;
+  }
+  .login-theme {
+    top: 14px;
+    right: 14px;
   }
   .login-logo {
     width: 152px;
@@ -1676,8 +1648,9 @@ button.text-button {
   .login h1 {
     font-size: 28px;
   }
-  .login-form button {
-    padding-inline: 16px;
+  .login-setup .login-logo {
+    width: 72px;
+    height: 72px;
   }
 }
 @media (max-width: 350px) {
@@ -1713,22 +1686,17 @@ button.text-button {
     padding: 6px 8px;
     font-size: 10px;
   }
-  .catalog-row {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .key-row {
-    flex-wrap: wrap;
-  }
-  .key-row .actions {
-    margin-left: auto;
-  }
 }
 @media (hover: none) {
   .reference-image .reference-copy {
     opacity: 1;
   }
 }
-.workspace, .provider-settings, .settings-section:not(.provider-settings > *), .login {
+/* Fade only the arriving session view; never retain a signed-out workspace for an exit effect. */
+.app-shell, .login {
+  animation: session-view-in 300ms ease-out;
+}
+.studio-reentered, .provider-settings, .settings-section:not(.provider-settings > *) {
   animation: view-in 220ms cubic-bezier(.16,1,.3,1);
 }
 .prompt-optimize, .prompt-progress:not(:empty), .prompt-highlight {
@@ -1744,6 +1712,7 @@ button.text-button {
 .toast-enter-from { opacity: 0; transform: translate(-50%, -6px); }
 .toast-leave-to { opacity: 0; }
 @keyframes view-in { from { opacity: .2; } }
+@keyframes session-view-in { from { opacity: .18; } }
 @keyframes prompt-in { from { opacity: .2; } }
 @keyframes dialog-in { from { opacity: .5; transform: translateY(6px) scale(.99); } to { opacity: 1; transform: none; } }
 @keyframes dialog-out { to { opacity: 0; transform: translateY(3px) scale(.995); } }
@@ -1775,7 +1744,7 @@ button.text-button {
 .select-option[aria-disabled="true"] { opacity: .5; cursor: not-allowed; }
 .select-option svg { flex: none; }
 @media (prefers-reduced-motion: reduce) {
-  .workspace, .provider-settings, .settings-section:not(.provider-settings > *), .login,
+  .app-shell, .login, .studio-reentered, .provider-settings, .settings-section:not(.provider-settings > *),
   .prompt-optimize, .prompt-progress:not(:empty), .prompt-highlight, .spinner {
     animation-name: none;
   }
@@ -1789,3 +1758,7 @@ button.text-button {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Bounded history pagination: retain normal document flow on narrow screens. */
+.history .history-load-more { display: flex; margin: 16px auto; min-width: 140px; justify-content: center; }
+.history .history-load-more:disabled { cursor: wait; opacity: .6; }

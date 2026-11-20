@@ -6,14 +6,16 @@ import { tmpdir } from "node:os";
 import { once } from "node:events";
 import { createServer } from "node:http";
 import { createApp } from "../dist/app.js";
+import { loopbackProvider } from "../../test/loopback-provider.js";
+import { setupAccount, signIn } from "./account-fixture.js";
 
 const png =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aJ1sAAAAASUVORK5CYII=";
-const adminKey = "isolated-delete-test-admin";
+const memberPassword = "isolated fixture member password";
 
 async function fixture(t, options = {}) {
   const dir = mkdtempSync(path.join(tmpdir(), "bimage-delete-"));
-  const service = await createApp({ dir, adminKey, worker: false, ...options });
+  const service = await createApp({ dir, worker: false, ...options });
   const { db } = service;
   const server = service.app.listen(0, "127.0.0.1");
   await once(server, "listening");
@@ -24,11 +26,11 @@ async function fixture(t, options = {}) {
     await service.close();
     rmSync(dir, { recursive: true, force: true });
   });
-  const base = `http://127.0.0.1:${server.address().port}/api`;
-  const admin = { authorization: `Bearer ${adminKey}` };
-  const adminId = db.prepare("SELECT id FROM keys WHERE role='admin'").get().id;
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const { identity, headers: admin } = await setupAccount(base, dir);
+  const adminId = identity.id;
   const request = (route, { method = "GET", headers = admin, body } = {}) =>
-    fetch(base + route, {
+    fetch(base + "/api" + route, {
       method,
       headers: {
         ...headers,
@@ -37,18 +39,27 @@ async function fixture(t, options = {}) {
       body: body && JSON.stringify(body),
       signal: AbortSignal.timeout(5000),
     });
+  let members = 0;
   return {
     db,
     request,
     adminId,
     async member() {
-      const response = await request("/admin/keys", {
+      const email = `member-${++members}@example.test`;
+      const response = await request("/admin/users", {
         method: "POST",
-        body: { name: "Fixture member", role: "user" },
+        body: {
+          email,
+          password: memberPassword,
+          name: "Fixture member",
+          role: "user",
+          concurrency: 1,
+        },
       });
-      assert.equal(response.status, 200);
-      const { id, key } = await response.json();
-      return { id, key, headers: { authorization: `Bearer ${key}` } };
+      assert.equal(response.status, 201);
+      const { id } = await response.json();
+      const { headers } = await signIn(base, email, memberPassword);
+      return { id, headers };
     },
     asset(id, owner = adminId) {
       db.prepare("INSERT INTO assets(id,owner,mime,bytes) VALUES(?,?,?,?)").run(
@@ -220,18 +231,12 @@ test("hard delete requires job ownership even for an admin and reuses session CS
     assert.equal(missing.status, 404);
     assert.deepEqual(await denied.json(), await missing.json());
   }
-  const login = await f.request("/login", {
-    method: "POST",
-    body: { key: owner.key },
-  });
-  assert.equal(login.status, 200);
-  const headers = { cookie: login.headers.get("set-cookie").split(";")[0] };
-  const { csrf } = await login.json();
+  const headers = { cookie: owner.headers.cookie };
   assert.equal((await f.request(route, { method, headers })).status, 403);
   assert.equal((await f.request(route, { headers })).status, 200);
   const deleted = await f.request(route, {
     method,
-    headers: { ...headers, "x-csrf-token": csrf },
+    headers: owner.headers,
   });
   assert.equal(deleted.status, 200);
   assert.deepEqual(await deleted.json(), { deletedAssetIds: [] });
@@ -255,7 +260,6 @@ test(
   "hard delete refuses running and not-yet-unwound work",
   { timeout: 8000 },
   async (t) => {
-    const f = await fixture(t, { worker: true });
     let started;
     const ready = new Promise((resolve) => (started = resolve));
     let upstreamCalls = 0;
@@ -265,6 +269,7 @@ test(
       started(res);
     });
     await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+    const f = await fixture(t, { worker: true, providerNetwork: loopbackProvider(upstream) });
     t.after(async () => {
       upstream.closeAllConnections();
       await new Promise((resolve) => upstream.close(resolve));

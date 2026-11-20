@@ -12,7 +12,7 @@ export interface Provider {
   apiKey?: string;
   kind?: string;
   models: Model[];
-  allowPrivate?: boolean;
+
   shared?: boolean;
   canManage?: boolean;
   hasKey?: boolean;
@@ -24,7 +24,7 @@ export interface ProviderDraft {
   baseUrl: string;
   apiKey: string;
   kind?: string;
-  allowPrivate: boolean;
+
   shared?: boolean;
   role?: string;
   models: Model[];
@@ -49,6 +49,8 @@ export interface Settings {
   imageModel?: string;
   textProvider?: string;
   textModel?: string;
+  quickProvider?: string;
+  quickModel?: string;
   form?: GenerationForm;
 }
 export interface Identity {

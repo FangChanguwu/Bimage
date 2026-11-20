@@ -1,3 +1,5 @@
+import { activatePersistentOwner, clearPersistentAssets, persistentAssetUsage, persistentEpoch, readPersistentAsset, writePersistentAsset, type AssetVariant } from "./persistentAssets.ts";
+export interface CacheOptions { owner: string; verify: () => Promise<void> }
 interface Entry {
   signal: AbortSignal;
   refs: number;
@@ -11,18 +13,41 @@ interface RecordEntry {
   refs: number;
   promise: Promise<Entry>;
   entry?: Entry;
+  validation?: Promise<Entry>;
 }
 const caches = new WeakMap<AbortSignal, ReturnType<typeof createCache>>();
-export function assetCache(signal: AbortSignal, unauthorized?: () => void) {
+export function assetCache(signal: AbortSignal, unauthorized?: () => void, options?: CacheOptions) {
   let cache = caches.get(signal);
   if (!cache) {
-    cache = createCache(signal, unauthorized);
+    cache = createCache(signal, unauthorized, options);
     caches.set(signal, cache);
   }
   return cache;
 }
-function createCache(signal: AbortSignal, unauthorized?: () => void) {
+function createCache(signal: AbortSignal, unauthorized?: () => void, options?: CacheOptions) {
   const entries = new Map<string, RecordEntry>();
+  let clearing: Promise<void> = options ? activatePersistentOwner(options.owner) : Promise.resolve();
+  const channel = options && typeof BroadcastChannel !== "undefined" ? new BroadcastChannel("bimage-asset-invalidation") : null;
+  const NOTICE_KEY = "bimage-asset-invalidation";
+  function receive(data: unknown) {
+    if (!data || typeof data !== "object") return;
+    const notice = data as { type?: unknown; asset?: unknown };
+    if (notice.type === "clear") clearMemory();
+    if (notice.type === "evict" && typeof notice.asset === "string") evictMemory(notice.asset);
+  }
+  if (channel) channel.onmessage = event => receive(event.data);
+  function storageNotice(event: StorageEvent) {
+    if (event.key !== NOTICE_KEY || !event.newValue) return;
+    try { receive(JSON.parse(event.newValue)); } catch { /* invalid notices cannot authorize anything */ }
+  }
+  if (options && typeof window !== "undefined") window.addEventListener("storage", storageNotice);
+  function announce(type: "clear" | "evict", asset?: string) {
+    if (!options) return;
+    const notice = { type, asset, nonce: `${Date.now()}:${Math.random()}` };
+    channel?.postMessage(notice);
+    try { localStorage.setItem(NOTICE_KEY, JSON.stringify(notice)); } catch { /* optional fallback */ }
+  }
+  const cacheKey = (id: string, variant: AssetVariant) => JSON.stringify([id, variant]);
   function drop(id: string, r: RecordEntry) {
     r.controller.abort();
     if (r.entry) {
@@ -32,9 +57,29 @@ function createCache(signal: AbortSignal, unauthorized?: () => void) {
     }
     if (entries.get(id) === r) entries.delete(id);
   }
+  function clearMemory() {
+    for (const [id, r] of entries) drop(id, r);
+  }
+  function clear() {
+    clearMemory();
+    announce("clear");
+    if (options) clearing = clearing.then(() => clearPersistentAssets(options.owner));
+    return clearing;
+  }
+  function evictMemory(id: string) {
+    for (const variant of ["original", "thumbnail"] as const) {
+      const k = cacheKey(id, variant), record = entries.get(k);
+      if (record) drop(k, record);
+    }
+  }
   function evict(id: string) {
-    const record = entries.get(id);
-    if (record) drop(id, record);
+    evictMemory(id);
+    announce("evict", id);
+    if (options) clearing = clearing.then(() => clearPersistentAssets(options.owner, id));
+    return clearing;
+  }
+  function usage() {
+    return options ? persistentAssetUsage(options.owner) : Promise.resolve({ bytes: 0, count: 0, limit: 128 * 1024 * 1024 });
   }
   function trim() {
     let bytes = [...entries.values()].reduce(
@@ -49,45 +94,82 @@ function createCache(signal: AbortSignal, unauthorized?: () => void) {
       }
     }
   }
-  async function get(id: string) {
+  async function get(id: string, variant: AssetVariant = "original") {
     signal.throwIfAborted();
-    let record = entries.get(id);
+    const k = cacheKey(id, variant);
+    let record = entries.get(k);
     if (record) {
-      entries.delete(id);
-      entries.set(id, record);
+      entries.delete(k);
+      entries.set(k, record);
+      if (options && record.entry) {
+        const current = record, entry = record.entry;
+        // Join pending authorization, but never reuse its result for a later hit.
+        if (!current.validation) current.validation = (async () => {
+          const requestSignal = entry.signal;
+          requestSignal.throwIfAborted();
+          const url = "/api/assets/" + encodeURIComponent(id) + (variant === "thumbnail" ? "?variant=thumbnail" : "");
+          const response = await fetch(url, {
+            method: "HEAD", signal: requestSignal,
+            credentials: "same-origin", cache: "no-store",
+          });
+          requestSignal.throwIfAborted();
+          if (response.status === 401) { void clear(); unauthorized?.(); }
+          if (!response.ok) {
+            if (response.status === 403 || response.status === 404) void evict(id);
+            throw Error("图片加载失败，请重试");
+          }
+          // HEAD authorizes this asset; identity readback also binds it to this owner.
+          await options.verify();
+          requestSignal.throwIfAborted();
+          return entry;
+        })().catch(e => {
+          drop(k, current);
+          throw e;
+        }).finally(() => { current.validation = undefined; });
+        return current.validation;
+      }
     } else {
       record = { controller: new AbortController(), refs: 0, promise: Promise.resolve(null as unknown as Entry) };
       const current = record;
-      entries.set(id, current);
+      entries.set(k, current);
       current.promise = (async () => {
         const requestSignal = AbortSignal.any([signal, current.controller.signal]);
-        const response = await fetch("/api/assets/" + encodeURIComponent(id), {
-          signal: requestSignal,
-          cache: "no-store",
+        if (options) await clearing;
+        requestSignal.throwIfAborted();
+        const epoch = options ? await persistentEpoch(options.owner) : undefined;
+        const stored = options && epoch !== undefined ? await readPersistentAsset(options.owner, id, variant, epoch) : undefined;
+        requestSignal.throwIfAborted();
+        const url = "/api/assets/" + encodeURIComponent(id) + (variant === "thumbnail" ? "?variant=thumbnail" : "");
+        const response = await fetch(url, {
+          method: stored ? "HEAD" : "GET", signal: requestSignal,
+          credentials: "same-origin", cache: "no-store",
         });
         requestSignal.throwIfAborted();
-        if (response.status === 401) unauthorized?.();
-        if (!response.ok) throw Error("图片加载失败，请重试");
-        const blob = await response.blob();
+        if (response.status === 401) { void clear(); unauthorized?.(); }
+        if (!response.ok) {
+          if (response.status === 403 || response.status === 404) void evict(id);
+          throw Error("图片加载失败，请重试");
+        }
+        const blob = stored || await response.blob();
         requestSignal.throwIfAborted();
-        const entry = {
-          signal: requestSignal,
-          refs: current.refs,
-          blob,
-          url: URL.createObjectURL(blob),
-        };
+        // A fresh /me readback prevents a replaced cookie from exposing another owner's bytes.
+        await options?.verify();
+        requestSignal.throwIfAborted();
+        if (options && !stored && epoch !== undefined) await writePersistentAsset(options.owner, id, variant, blob, epoch);
+        requestSignal.throwIfAborted();
+        const entry = { signal: requestSignal, refs: current.refs, blob, url: URL.createObjectURL(blob) };
         current.entry = entry;
         return entry;
       })().catch((e) => {
-        drop(id, current);
+        drop(k, current);
         throw e;
       });
     }
     return record.promise;
   }
-  async function acquire(id: string) {
-    const promise = get(id);
-    const record = entries.get(id);
+  async function acquire(id: string, variant: AssetVariant = "original") {
+    const promise = get(id, variant);
+    const record = entries.get(cacheKey(id, variant));
     if (record) record.refs++;
     try {
       return await promise;
@@ -96,8 +178,8 @@ function createCache(signal: AbortSignal, unauthorized?: () => void) {
       throw e;
     }
   }
-  function release(id: string) {
-    const record = entries.get(id);
+  function release(id: string, variant: AssetVariant = "original") {
+    const record = entries.get(cacheKey(id, variant));
     if (record) record.refs = Math.max(0, record.refs - 1);
     trim();
   }
@@ -132,11 +214,13 @@ function createCache(signal: AbortSignal, unauthorized?: () => void) {
   signal.addEventListener(
     "abort",
     () => {
-      for (const [id, r] of entries) drop(id, r);
+      clearMemory();
+      channel?.close();
+      if (typeof window !== "undefined") window.removeEventListener("storage", storageNotice);
     },
     { once: true },
   );
-  return { get, acquire, release, thumbnail, trim, evict };
+  return { get, acquire, release, thumbnail, trim, evict, clear, usage };
 }
 export async function download(url: string, name: string, signal: AbortSignal) {
   signal.throwIfAborted();

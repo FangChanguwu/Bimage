@@ -9,7 +9,6 @@ export interface Provider {
   name: string;
   baseUrl?: string;
   models: Model[];
-  allowPrivate?: boolean;
   shared?: boolean;
   canManage?: boolean;
   hasKey?: boolean;
@@ -20,7 +19,6 @@ export interface ProviderDraft {
   baseUrl: string;
   apiKey: string;
   models: Model[];
-  allowPrivate: boolean;
   shared: boolean;
   kind: "mixed";
 }
@@ -44,6 +42,8 @@ export interface Settings {
   imageModel?: string;
   textProvider?: string;
   textModel?: string;
+  quickProvider?: string;
+  quickModel?: string;
   form?: GenerationForm;
 }
 export interface Identity {
@@ -51,9 +51,18 @@ export interface Identity {
   name: string;
   role: string;
   csrf: string;
-  disabled?: boolean;
-  expires?: string | null;
+  email?: string;
+  concurrency?: number;
 }
+export type AccountRole = "admin" | "user";
+export interface Account {
+  id: string;
+  email: string;
+  name: string;
+  role: AccountRole;
+  concurrency: number;
+}
+export interface AccountDirectory { users: Account[] }
 export interface Site {
   title: string;
   icon?: string;

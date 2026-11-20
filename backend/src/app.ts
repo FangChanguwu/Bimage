@@ -4,20 +4,33 @@ import rateLimit from "express-rate-limit";
 import path from "node:path";
 import { Store } from "./db.js";
 import { mountAuthentication } from "./auth.js";
+import { SetupCode } from "./account-setup.js";
 import { mountPublicSettings, mountSettings } from "./settings.js";
 import { errorHandler } from "./http.js";
 import { Providers } from "./providers.js";
 import { Assets } from "./assets.js";
 import { mountRewrite } from "./rewrite.js";
 import { Queue } from "./queue.js";
+import { clientRateLimitKey } from "./client-rate-limit.js";
+import type { ProviderNetwork } from "./network.js";
 export { validateUrl } from "./network.js";
 import type { AppOptions } from "./types.js";
 
-export async function createApp(options: AppOptions = {}) {
-  const store = new Store(
-    options.dir ?? process.env.DATA_DIR ?? path.resolve("data"),
-    options.adminKey,
+export async function createApp(
+  options: AppOptions & { trustedWebProxyIp?: string; providerNetwork?: ProviderNetwork } = {},
+) {
+  const keyGenerator = clientRateLimitKey(
+    options.trustedWebProxyIp ?? process.env.TRUSTED_WEB_PROXY_IP,
   );
+  const dir = options.dir ?? process.env.DATA_DIR ?? path.resolve("data");
+  const store = new Store(dir);
+  let installer: SetupCode;
+  try {
+    installer = new SetupCode(store, dir);
+  } catch (error) {
+    store.db.close();
+    throw error;
+  }
   const app = express();
   app.disable("x-powered-by");
   app.use(
@@ -36,6 +49,7 @@ export async function createApp(options: AppOptions = {}) {
   app.use(
     "/api",
     rateLimit({
+      keyGenerator,
       windowMs: 60000,
       limit: 180,
       standardHeaders: "draft-8",
@@ -44,9 +58,9 @@ export async function createApp(options: AppOptions = {}) {
   );
   app.get("/health", (_request, response) => response.json({ ok: true }));
   mountPublicSettings(app, store);
-  mountAuthentication(app, store);
+  mountAuthentication(app, store, installer, keyGenerator);
   mountSettings(app, store);
-  const providers = new Providers(store);
+  const providers = new Providers(store, options.providerNetwork);
   const assets = new Assets(store);
   const queue = new Queue(
     store,
@@ -55,9 +69,9 @@ export async function createApp(options: AppOptions = {}) {
     options.concurrency ?? 1,
     options.retryMs ?? 1000,
   );
-  providers.mount(app, (provider) => queue.revokeShared(provider));
+  providers.mount(app, (provider) => queue.revokeShared(provider), keyGenerator);
   assets.mount(app);
-  mountRewrite(app, providers, assets);
+  mountRewrite(app, providers, assets, keyGenerator);
   queue.mount(app);
   app.use("/api", (_request, response) =>
     response.status(404).json({ error: "接口不存在" }),
