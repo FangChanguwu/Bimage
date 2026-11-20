@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="frontend/public/Bimage.png" width="160" height="160" alt="Bimage logo" />
+</p>
+
 <h1 align="center">Bimage</h1>
 
 <div align="center">
