@@ -4,11 +4,11 @@ Independent Node.js TypeScript REST service. No frontend static files are served
 
 ```sh
 npm ci
-npm test
+npm run build
 HOST=127.0.0.1 npm start
 ```
 
-`npm test` compiles strict TypeScript, then runs backend tests against isolated SQLite databases and local HTTP mocks. The root `npm test` runs the compatibility suite separately. No real provider credentials or paid endpoints are used. `src/app.js` is a small compatibility export for historical tests; the implementation is TypeScript in `src/*.ts`, compiled to `dist/*.js`.
+`npm run build` compiles strict TypeScript from `src/*.ts` to `dist/*.js`; `npm run typecheck` checks types without emitting files. Private development tests are not included in the public deployment source. `src/app.js` remains a small compatibility export; the implementation is TypeScript.
 
 ## Runtime configuration
 

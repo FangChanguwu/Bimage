@@ -94,6 +94,10 @@ docker compose up -d --build --wait
 
 对外部署时请启用 HTTPS，并备份 `data/`；其中包含任务历史、图片和供应商凭据，不应提交到 Git。更多运行参数见[后端配置](backend/README.md)，接口说明见 [API 文档](docs/API.md)。
 
+## 构建检查
+
+安装依赖后，在仓库根目录执行 `npm run typecheck` 和 `npm run build`，可检查并编译前后端。公开部署源码不包含私有开发测试及其 npm 脚本。
+
 ## 许可证
 
 本项目基于 [MIT License](LICENSE) 开源。

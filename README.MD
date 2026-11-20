@@ -94,6 +94,10 @@ The workbench is available at [http://localhost:6767](http://localhost:6767) by 
 
 Use HTTPS for public deployments. Back up `data/` and keep it out of Git because it contains job history, images, and provider credentials. See the [backend configuration](backend/README.md) and the [API reference (Chinese)](docs/API.md) for details.
 
+## Build checks
+
+After installing dependencies, run `npm run typecheck` and `npm run build` from the repository root to check and compile both services. Private development tests and their npm scripts are not included in the public deployment source.
+
 ## License
 
 Bimage is licensed under the [MIT License](LICENSE).

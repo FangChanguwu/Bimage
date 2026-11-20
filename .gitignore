@@ -14,3 +14,14 @@ secrets/
 playwright-report/
 test-results/
 .impeccable/review/
+
+# Private development guidance, tests, and superseded preview
+/AGENTS.md
+/DESIGN.md
+/PRODUCT.md
+/test/
+/backend/tests/
+/frontend/tests/
+/frontend/playwright.config.ts
+/frontend/vitest.local.config.ts
+/docs/preview.png
