@@ -6,7 +6,7 @@
 
 **English** · [简体中文](README_CN.MD)
 
-![Version](https://img.shields.io/badge/version-0.2.0-blue)
+![Version](https://img.shields.io/badge/version-0.2.1-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 </div>

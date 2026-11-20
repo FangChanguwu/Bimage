@@ -15,7 +15,10 @@ let observer: IntersectionObserver | undefined,
 let heldCache: ReturnType<typeof assetCache> | undefined;
 let heldVariant: "original" | "thumbnail" = "thumbnail";
 let generation = 0;
+let unlisten: (() => void) | undefined;
 function release() {
+  unlisten?.();
+  unlisten = undefined;
   if (held) heldCache?.release(held, heldVariant);
   held = "";
   src.value = "";
@@ -31,16 +34,29 @@ async function load() {
     heldCache = cache;
     heldVariant = props.original ? "original" : "thumbnail";
     const entry = await cache.acquire(id, heldVariant);
-    if (version === generation) src.value = entry.url;
+    if (version === generation) {
+      entry.signal.throwIfAborted();
+      src.value = entry.url;
+      // Scrolling is not disposal. Keep the displayed URL pinned until the
+      // component unmounts or its asset/session is explicitly invalidated.
+      observer?.disconnect();
+      const invalidated = () => {
+        if (version === generation) { src.value = ""; error.value = true; }
+      };
+      entry.signal.addEventListener("abort", invalidated, { once: true });
+      unlisten = () => entry.signal.removeEventListener("abort", invalidated);
+    }
   } catch {
     if (version === generation) error.value = true;
   }
 }
 onMounted(() => {
+  // Dialog children mount before showModal(). An original with no intrinsic
+  // size must not wait for its own IntersectionObserver to start loading.
+  if (props.original) { void load(); return; }
   observer = new IntersectionObserver(
     (entries) => {
       if (entries[0].isIntersecting) load();
-      else release();
     },
     { rootMargin: "200px" },
   );
