@@ -287,14 +287,13 @@ function defaultsSaved(value: Settings) {
   <div class="app-shell">
     <aside class="sidebar">
       <div class="sidebar-brand">
-        <img :src="site.icon || '/Bimage.png'" :alt="t('站点图标')" /><button
-          class="icon-button theme-toggle"
-          :aria-label="t('切换主题')"
-          :title="t('切换浅色 / 暗色')"
-          @click="emit('theme')"
-        >
-          <Moon v-if="theme === 'light'" :size="18" /><Sun v-else :size="18" />
-        </button>
+        <img :src="site.icon || '/Bimage.png'" :alt="t('站点图标')" />
+        <div class="appearance-controls">
+          <LanguageSwitch />
+          <button type="button" class="icon-button theme-toggle" :aria-label="t('切换主题')" :title="t('切换浅色 / 暗色')" @click="emit('theme')">
+            <Moon v-if="theme === 'light'" :size="18" aria-hidden="true" /><Sun v-else :size="18" aria-hidden="true" />
+          </button>
+        </div>
       </div>
       <nav :aria-label="t('主导航')">
         <button
@@ -325,7 +324,7 @@ function defaultsSaved(value: Settings) {
           @click="page = 'settings'"
         >
           <SettingsIcon :size="18" /><span>{{ t('系统设置') }}</span></button
-        ><LanguageSwitch /><button :aria-label="t('退出登录')" @click="emit('logout')">
+        ><button :aria-label="t('退出登录')" @click="emit('logout')">
           <LogOut :size="18" /><span>{{ t('退出登录') }}</span>
         </button>
       </div>

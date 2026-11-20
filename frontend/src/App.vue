@@ -106,17 +106,13 @@ async function logout() {
     @site="updateSite"
   />
   <main v-else class="login" :class="{ 'login-setup': setupRequired }">
-    <LanguageSwitch placement="login" />
-    <button
-      class="icon-button login-theme"
-      :aria-label="t('切换主题')"
-      @click="theme = theme === 'light' ? 'dark' : 'light'"
-    >
-      <Moon v-if="theme === 'light'" :size="20" /><Sun
-        v-else
-        :size="20"
-      /></button
-    ><img class="login-logo" :src="site.icon || '/Bimage.png'" :alt="t('站点图标')" />
+    <div class="appearance-controls login-controls">
+      <LanguageSwitch />
+      <button type="button" class="icon-button login-theme" :aria-label="t('切换主题')" :title="t('切换浅色 / 暗色')" @click="theme = theme === 'light' ? 'dark' : 'light'">
+        <Moon v-if="theme === 'light'" :size="18" aria-hidden="true" /><Sun v-else :size="18" aria-hidden="true" />
+      </button>
+    </div>
+    <img class="login-logo" :src="site.icon || '/Bimage.png'" :alt="t('站点图标')" />
     <div class="login-brand">
       <h1>{{ site.title || "Bimage" }}</h1>
       <small class="login-version">v{{ version }}</small>

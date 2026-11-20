@@ -177,14 +177,6 @@ test('English workspace, settings, and account modal fit at 320px', async ({ pag
   await toggle(page);
   await expect(page.getByRole('heading', { name: 'Image studio', exact: true })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
-  await expect(page.locator('.language-switch span')).toBeVisible();
-  const languageGeometry = await page.locator('.language-switch').evaluate(el => {
-    const button = el.getBoundingClientRect(), label = el.querySelector('span')!.getBoundingClientRect();
-    return { buttonLeft: button.left, buttonRight: button.right, labelLeft: label.left, labelRight: label.right, labelHeight: label.height, labelWidth: label.width, font: getComputedStyle(el.querySelector('span')!).font };
-  });
-  expect(languageGeometry.labelLeft).toBeGreaterThanOrEqual(languageGeometry.buttonLeft);
-  expect(languageGeometry.labelRight).toBeLessThanOrEqual(languageGeometry.buttonRight);
-  expect(languageGeometry, JSON.stringify(languageGeometry)).toMatchObject({ labelHeight: 24 });
   await page.screenshot({ path: testInfo.outputPath('shell-workspace-en-320.png'), animations: 'disabled' });
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
@@ -201,3 +193,39 @@ test('English workspace, settings, and account modal fit at 320px', async ({ pag
   expect(await dialog.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
   await page.screenshot({ path: testInfo.outputPath('shell-account-en-320.png'), animations: 'disabled' });
 });
+
+for (const width of [1440, 900, 320]) {
+  for (const signedIn of [false, true]) {
+    test(`icon-only language and theme controls align in ${signedIn ? 'workspace' : 'login'} at ${width}px`, async ({ page }, testInfo) => {
+      await fixture(page, false, signedIn);
+      await page.setViewportSize({ width, height: 800 });
+      await page.goto('/');
+      await expect(page.getByRole('heading', { name: signedIn ? '图像工作台' : '登录', exact: true })).toBeVisible();
+      const language = page.locator('.language-switch');
+      const theme = page.locator(signedIn ? '.theme-toggle' : '.login-theme');
+      await expect(language).toHaveCount(1);
+      await expect(language).toHaveAccessibleName('English');
+      await expect(language.locator('svg')).toBeVisible();
+      await expect(language).toHaveText('', { timeout: 1000 });
+      const left = (await language.boundingBox())!, right = (await theme.boundingBox())!;
+      expect(left.width).toBe(right.width);
+      expect(left.height).toBe(right.height);
+      expect(left.y).toBe(right.y);
+      expect(right.x - (left.x + left.width)).toBeGreaterThanOrEqual(4);
+      expect(right.x - (left.x + left.width)).toBeLessThanOrEqual(12);
+      const shell = (await page.locator(signedIn ? '.sidebar' : '.login').boundingBox())!;
+      expect(left.x).toBeGreaterThan(shell.x);
+      expect(right.x + right.width).toBeLessThan(shell.x + shell.width);
+      await language.focus();
+      await page.keyboard.press('Enter');
+      await expect(language).toHaveAccessibleName('简体中文');
+      await expect(page.locator('html')).toHaveAttribute('lang', 'en');
+      await page.keyboard.press('Tab');
+      await expect(theme).toBeFocused();
+      await page.keyboard.press('Space');
+      await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+      await expect(page.locator('html')).toHaveAttribute('lang', 'en');
+      await page.screenshot({ path: testInfo.outputPath('controls-dark.png'), animations: 'disabled' });
+    });
+  }
+}

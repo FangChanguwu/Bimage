@@ -301,7 +301,12 @@ label textarea {
   justify-content: center;
   padding: 60px 20px 46px;
 }
-.login-theme {
+.appearance-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.login-controls {
   position: absolute;
   top: 24px;
   right: 24px;
@@ -390,7 +395,8 @@ label textarea {
   flex-direction: column;
   gap: 8px;
 }
-.sidebar button:not(.theme-toggle) {
+.sidebar nav button,
+.sidebar-bottom button {
   justify-content: flex-start;
   border: 0;
   padding: 11px 12px;
@@ -1417,6 +1423,8 @@ button.text-button {
     width: 42px;
     height: 42px;
   }
+  .sidebar-brand .appearance-controls { gap: 4px; }
+  .sidebar-brand .icon-button { width: 26px; min-width: 26px; }
   .workspace {
     gap: 18px;
   }
@@ -1488,7 +1496,7 @@ button.text-button {
     width: 36px;
     height: 36px;
   }
-  .sidebar-brand .theme-toggle {
+  .sidebar-brand .icon-button {
     width: 32px;
     min-width: 32px;
   }
@@ -1504,7 +1512,8 @@ button.text-button {
     flex-direction: row;
     gap: 4px;
   }
-  .sidebar button:not(.theme-toggle) {
+  .sidebar nav button,
+  .sidebar-bottom button {
     width: 36px;
     min-height: 36px;
   }
@@ -1637,7 +1646,7 @@ button.text-button {
   .login {
     padding: 52px 20px 28px;
   }
-  .login-theme {
+  .login-controls {
     top: 14px;
     right: 14px;
   }
