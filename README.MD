@@ -10,7 +10,7 @@
 
 **English** · [简体中文](README_CN.MD)
 
-![Version](https://img.shields.io/badge/version-0.3.2-blue)
+![Version](https://img.shields.io/badge/version-0.3.3-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 </div>
@@ -61,7 +61,7 @@ npm ci
 npm --prefix backend ci
 npm --prefix frontend ci
 npm --prefix backend run build
-HOST=127.0.0.1 npm --prefix backend start
+BIMAGE_PUBLIC_URL=http://127.0.0.1:5178 HOST=127.0.0.1 npm --prefix backend start
 ```
 
 In a second terminal, open the repository directory and start the frontend:
@@ -70,7 +70,7 @@ In a second terminal, open the repository directory and start the frontend:
 npm --prefix frontend run dev
 ```
 
-Open [http://127.0.0.1:5178](http://127.0.0.1:5178). For first-time setup, read the one-time code from `data/setup-code.txt` on the server and set your own password for `admin` in the web UI.
+For first-time setup, open the private setup link printed in the API terminal and enter your email and password to create the first administrator. After setup, open [http://127.0.0.1:5178](http://127.0.0.1:5178) and sign in normally.
 
 Sign in, open **Settings**, and add an OpenAI-compatible provider. In the Providers tab, choose independent defaults for image generation, quick prompts, and prompt optimization. You can skip text models if you only need image generation.
 
@@ -90,7 +90,9 @@ docker compose build
 docker compose up -d --wait
 ```
 
-Open [http://localhost:6767](http://localhost:6767). On the server, read the one-time setup code privately with `sudo cat data/setup-code.txt`, then enter it in the setup page and choose your own `admin` password. Do not send the code or password to chat, screenshots or logs. The mode-0600 code file is removed after successful setup. Existing accounts do not need setup again.
+Set `BIMAGE_PUBLIC_URL` in `.env` to the address you will use in your browser (default `http://localhost:6767`). Privately run `docker compose logs api` on the server, open the setup link it prints, and enter your email and password (at least 5 characters) to create the first administrator. Opening the link does not create an account; submit the form to complete setup. The one-time link survives restarts and is disabled after setup; existing accounts and sessions stay unchanged, including older `admin` logins. There is no public registration.
+
+Keep the setup link and password out of chat, screenshots and shared logs. The page removes the secret parameter from its address immediately and does not save it in browser storage; if you refresh before submitting, reopen the original console link. The server's private mode-0600 `data/setup-code.txt` file is only for restart recovery and is removed after setup. Restrict access to console logs, which retain the printed link; configure any outer reverse proxy to omit query strings and Referer from access logs. Use HTTPS for remote access.
 
 Check startup with `docker compose ps` and `curl --fail http://127.0.0.1:6767/health` (adjust the port if changed). For failures, inspect `docker compose logs --tail=100 api web` locally; redact secrets before sharing. Both services should be healthy. Only web port `6767` is published; API port `6768` stays internal. The default container names are fixed, so a second installation on the same Docker host also needs different container names, not just a different Compose project name or port.
 
@@ -99,6 +101,7 @@ Check startup with `docker compose ps` and `curl --fail http://127.0.0.1:6767/he
 | `.env` setting | Default | Purpose |
 | --- | --- | --- |
 | `BIMAGE_PORT` | `6767` | Published web port. |
+| `BIMAGE_PUBLIC_URL` | `http://localhost:6767` | Trusted HTTP(S) origin for setup links; no path, credentials, query or fragment. Set this explicitly for your domain or custom port. |
 | `BIMAGE_BIND_HOST` | `0.0.0.0` | Use `127.0.0.1` when the HTTPS reverse proxy runs on the same host. |
 | `BIMAGE_COOKIE_SECURE` | `false` | Use `true` for HTTPS; keep `false` only for local HTTP. |
 | `BIMAGE_CONCURRENCY` | `8` | Site-wide image-task concurrency (1–8); accounts have separate limits. |
@@ -144,13 +147,13 @@ After updating, check health as above, sign in with an existing account, and ver
 
 ### Rollback
 
-Keep the backup, previous source commit and previous local images until acceptance. During maintenance, stop web and API, preserve the failed `data/` under a different private name, then restore the **whole** backed-up `data/`, `.env` and any private overrides. Do not merge old/new database files or copy a live SQLite database by itself. Check out the recorded commit (`git switch --detach <saved-commit>`), rebuild with `docker compose build`, and start with `docker compose up -d --force-recreate --wait`; verify health and existing data again. If old source/dependencies are no longer buildable, use your saved matching API/web image tags with `BIMAGE_API_IMAGE` / `BIMAGE_WEB_IMAGE` and `docker compose up -d --no-build --pull never --force-recreate --wait`. Do not reuse data already migrated by a newer version with an older API: restore its matching backup. Rollback loses changes made after that backup; retain the failed copy for investigation.
+Keep the backup, previous source commit and previous local images until the update is confirmed working. During maintenance, stop web and API, preserve the failed `data/` under a different private name, then restore the **whole** backed-up `data/`, `.env` and any private overrides. Do not merge old/new database files or copy a live SQLite database by itself. Check out the recorded commit (`git switch --detach <saved-commit>`), rebuild with `docker compose build`, and start with `docker compose up -d --force-recreate --wait`; verify health and existing data again. If old source/dependencies are no longer buildable, use your saved matching API/web image tags with `BIMAGE_API_IMAGE` / `BIMAGE_WEB_IMAGE` and `docker compose up -d --no-build --pull never --force-recreate --wait`. Do not reuse data already migrated by a newer version with an older API: restore its matching backup. Rollback loses changes made after that backup; retain the failed copy for investigation.
 
 See also the [API reference (Chinese)](docs/API.md).
 
-## Build checks
+## Source build
 
-After installing dependencies, run `npm run typecheck` and `npm run build` from the repository root to check and compile both services. Private development tests and their npm scripts are not included in the public deployment source.
+After installing dependencies, run `npm run build` from the repository root to compile both services.
 
 ## License
 

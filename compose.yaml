@@ -1,12 +1,13 @@
 services:
   api:
     build: .
-    image: "${BIMAGE_API_IMAGE:-bimage-panel-api:0.3.2}"
+    image: "${BIMAGE_API_IMAGE:-bimage-panel-api:0.3.3}"
     container_name: Bimage-panel-api
     restart: unless-stopped
     environment:
       PORT: "6768"
       DATA_DIR: /app/data
+      BIMAGE_PUBLIC_URL: "${BIMAGE_PUBLIC_URL:-http://localhost:6767}"
       CONCURRENCY: "${BIMAGE_CONCURRENCY:-8}"
       COOKIE_SECURE: "${BIMAGE_COOKIE_SECURE:-false}"
     volumes:
@@ -26,7 +27,7 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    image: "${BIMAGE_WEB_IMAGE:-bimage-panel-web:0.3.2}"
+    image: "${BIMAGE_WEB_IMAGE:-bimage-panel-web:0.3.3}"
     container_name: Bimage-panel
     restart: unless-stopped
     depends_on:

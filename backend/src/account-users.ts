@@ -13,7 +13,7 @@ export const accountView = ({
   concurrency,
 }: Account): Account => ({ id, email, name, role, concurrency });
 
-function accountEmail(value: unknown): string {
+export function accountEmail(value: unknown): string {
   if (typeof value !== "string" || value.length > 254)
     throw fail(400, "邮箱无效");
   const email = value.trim().toLowerCase();

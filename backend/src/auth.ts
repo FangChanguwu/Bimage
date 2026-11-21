@@ -9,7 +9,7 @@ import {
   verifyPassword,
 } from "./account-password.js";
 import { SetupCode, setupRequired } from "./account-setup.js";
-import { accountView, mountUsers } from "./account-users.js";
+import { accountEmail, accountView, mountUsers } from "./account-users.js";
 import type { ClientRateLimitKey } from "./client-rate-limit.js";
 import type { Account, AccountRow, Identity, SessionRow } from "./types.js";
 
@@ -85,7 +85,8 @@ export function mountAuthentication(
     requireSameOrigin(request);
     if (!setupRequired(store)) throw fail(409, "初始化已完成");
     const input = body(request);
-    if (!installer.matches(input.code)) throw fail(403, "初始化验证码无效");
+    if (!installer.matches(input.token)) throw fail(403, "初始化链接无效");
+    const email = accountEmail(input.email);
     const passwordHash = await hashPassword(input.password);
     const session = store.transaction(() => {
       if (!setupRequired(store)) throw fail(409, "初始化已完成");
@@ -93,7 +94,7 @@ export function mountAuthentication(
       const account: Account = {
         id: old?.id ?? randomUUID(),
         name: old?.name || "Administrator",
-        email: "admin",
+        email,
         role: "admin",
         concurrency: 1,
       };

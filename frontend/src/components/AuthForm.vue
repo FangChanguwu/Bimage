@@ -3,7 +3,7 @@ import { ref } from 'vue';
 import { ArrowRight } from 'lucide-vue-next';
 import { t } from '../i18n';
 
-const props = defineProps<{ setup: boolean; pending: boolean; error: string }>();
+const props = defineProps<{ setup: boolean; hasSetupToken: boolean; pending: boolean; error: string }>();
 const emit = defineEmits<{
   submit: [identifier: string, password: string];
   edit: [];
@@ -15,9 +15,9 @@ function edited() {
   emit('edit');
 }
 function submit() {
-  if (props.pending) return;
+  if (props.pending || (props.setup && !props.hasSetupToken)) return;
   edited();
-  if (!props.setup && !identifier.value.trim()) {
+  if (!identifier.value.trim()) {
     validation.value = '请输入邮箱';
     return;
   }
@@ -32,21 +32,17 @@ function submit() {
 <template>
   <section class="panel auth-panel" aria-labelledby="auth-heading">
     <h2 id="auth-heading">{{ t(setup ? '初始化管理员' : '登录') }}</h2>
-    <p v-if="setup" class="muted auth-intro">{{ t('从服务器上的') }} <code>data/setup-code.txt</code> {{ t('获取一次性初始化代码，再为') }} <strong>admin</strong>{{ t('设置密码。') }}</p>
+    <p v-if="setup" class="muted auth-intro">{{ t(hasSetupToken ? '填写邮箱和密码，创建首个管理员账号。' : '请从服务器控制台打开初始化链接。') }}</p>
 
     <form class="auth-form" :aria-busy="pending" @submit.prevent="submit" @input="edited">
-      <fieldset :disabled="pending">
-        <template v-if="setup">
-          <label>{{ t('管理员账号') }}<input type="text" name="username" value="admin" autocomplete="username" readonly /></label>
-          <label>{{ t('一次性初始化代码') }}<input v-model="identifier" type="password" name="code" autocomplete="off" spellcheck="false" required /></label>
-        </template>
-        <label v-else>{{ t('邮箱') }}<input v-model="identifier" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required /></label>
+      <fieldset :disabled="pending || (setup && !hasSetupToken)">
+        <label>{{ t('邮箱') }}<input v-model="identifier" :type="setup ? 'email' : 'text'" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="254" required /></label>
         <label v-if="setup">{{ t('新密码') }}<input v-model="password" type="password" name="new-password" autocomplete="new-password" minlength="5" required aria-describedby="setup-password-hint" /></label>
         <label v-else>{{ t('密码') }}<input v-model="password" type="password" name="password" autocomplete="current-password" required /></label>
         <small v-if="setup" id="setup-password-hint">{{ t('至少 5 个字符。') }}</small>
         <label v-if="setup">{{ t('确认密码') }}<input v-model="repeat" type="password" name="confirm-password" autocomplete="new-password" required /></label>
         <p v-if="validation || error" class="login-error" role="alert">{{ t(validation || error) }}</p>
-        <button class="primary" type="submit" :disabled="pending">
+        <button class="primary" type="submit" :disabled="pending || (setup && !hasSetupToken)">
           {{ t(pending ? (setup ? '正在创建…' : '正在登录…') : setup ? '创建管理员并登录' : '登录') }}
           <ArrowRight :size="17" aria-hidden="true" />
         </button>

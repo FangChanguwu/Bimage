@@ -10,7 +10,7 @@
 
 [English](README.MD) · **简体中文**
 
-![Version](https://img.shields.io/badge/version-0.3.2-blue)
+![Version](https://img.shields.io/badge/version-0.3.3-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 </div>
@@ -61,7 +61,7 @@ npm ci
 npm --prefix backend ci
 npm --prefix frontend ci
 npm --prefix backend run build
-HOST=127.0.0.1 npm --prefix backend start
+BIMAGE_PUBLIC_URL=http://127.0.0.1:5178 HOST=127.0.0.1 npm --prefix backend start
 ```
 
 在另一个终端进入仓库目录，启动前端：
@@ -70,7 +70,7 @@ HOST=127.0.0.1 npm --prefix backend start
 npm --prefix frontend run dev
 ```
 
-访问 [http://127.0.0.1:5178](http://127.0.0.1:5178)。首次设置时，从服务器的 `data/setup-code.txt` 读取一次性初始化码，在网页中为 `admin` 自定义密码。
+首次使用时，打开 API 终端打印的私密初始化链接，填写邮箱和密码，创建首个管理员。完成后即可访问 [http://127.0.0.1:5178](http://127.0.0.1:5178) 正常登录。
 
 登录后，在「系统设置」中添加 OpenAI 兼容供应商，在供应商页分别选择快速提示词、提示词优化和生图模型。只使用生图时，无需配置文本模型。
 
@@ -90,7 +90,9 @@ docker compose build
 docker compose up -d --wait
 ```
 
-访问 [http://localhost:6767](http://localhost:6767)。通过可信服务器终端私下执行 `sudo cat data/setup-code.txt`，将一次性初始化码填入设置页，并为 `admin` 自定义密码。不要将初始化码或密码发到聊天、截图或日志中。初始化成功后，权限为 0600 的码文件会被删除；已有账号无需重新初始化。
+在 `.env` 中将 `BIMAGE_PUBLIC_URL` 设为浏览器实际访问的地址（默认 `http://localhost:6767`）。在服务器私下执行 `docker compose logs api`，打开控制台打印的初始化链接，填写邮箱和密码（至少 5 个字符）创建首个管理员。仅打开链接不会创建账号，提交表单后才完成初始化。一次性链接在重启后保持有效，初始化完成后失效；已有账号和会话保持不变，包括旧版 `admin` 登录，不开放公开注册。
+
+不要把初始化链接或密码发送到聊天、截图或共享日志。页面读取密钥后立即从地址栏移除参数，不写入浏览器存储；提交前刷新页面需重新打开原控制台链接。服务器权限为 0600 的 `data/setup-code.txt` 仅用于重启恢复，完成后删除。控制台日志仍保留曾打印的链接，应限制访问；外层反向代理的访问日志也应省略查询参数和 Referer。远程访问请使用 HTTPS。
 
 用 `docker compose ps` 和 `curl --fail http://127.0.0.1:6767/health` 检查启动（修改端口后同步调整地址）。异常时在本机查看 `docker compose logs --tail=100 api web`，分享前先脱敏。两个服务均应为 healthy。仅发布 web 的 `6767` 端口，API 的 `6768` 保持内部访问。默认容器名固定，同一 Docker 主机上安装第二套时，还需修改容器名，仅改 Compose 项目名或端口不够。
 
@@ -99,8 +101,9 @@ docker compose up -d --wait
 | `.env` 配置 | 默认值 | 用途 |
 | --- | --- | --- |
 | `BIMAGE_PORT` | `6767` | 工作台对外端口。 |
+| `BIMAGE_PUBLIC_URL` | `http://localhost:6767` | 初始化链接的可信 HTTP(S) 源地址，不含路径、凭据、查询参数或片段；使用域名或自定义端口时明确设置。 |
 | `BIMAGE_BIND_HOST` | `0.0.0.0` | HTTPS 反向代理位于同一宿主机时设为 `127.0.0.1`。 |
-| `BIMAGE_COOKIE_SECURE` | `false` | HTTPS 访问设为 `true`；仅本机 HTTP 测试保留 `false`。 |
+| `BIMAGE_COOKIE_SECURE` | `false` | HTTPS 访问设为 `true`；仅本机 HTTP 保留 `false`。 |
 | `BIMAGE_CONCURRENCY` | `8` | 全站生图子任务并发（1–8），账号另有并发限制。 |
 
 不要通过公网 HTTP 传输登录凭据。对外服务应使用同源 HTTPS 反向代理，保留原始 `Host`，转发 `/api/` 和 `/health`，并限制上游端口仅供代理访问。代理也在容器中时，使用其可达的私网上游，而不是代理自身的 `127.0.0.1`。需要按客户端独立限流时，应在两跳分别固定可信代理的精确 socket 地址，并由入口覆盖 `X-Real-IP`，不要信任任意客户端转发头；详见[后端配置](backend/README.md)。
@@ -144,13 +147,13 @@ docker compose up -d --wait
 
 ### 回滚
 
-验收前保留备份、旧源码提交和旧本地镜像。维护期间停止 web 与 API，将故障现场的 `data/` 改名私下保留，再恢复备份中的**整个** `data/`、`.env` 及私有覆盖配置；不要混合新旧数据库文件，也不要单独复制运行中的 SQLite 主文件。检出记录的旧提交（`git switch --detach <saved-commit>`），执行 `docker compose build` 和 `docker compose up -d --force-recreate --wait`，重新核对健康与原有数据。如果旧源码／依赖已无法构建，可通过 `BIMAGE_API_IMAGE` / `BIMAGE_WEB_IMAGE` 指定保留的配套旧镜像标签，再执行 `docker compose up -d --no-build --pull never --force-recreate --wait`。不要让旧 API 使用已被新版迁移的数据，应同时恢复对应备份。回滚会丢失备份之后的变更，保留故障现场副本以便调查。
+确认更新正常前保留备份、旧源码提交和旧本地镜像。维护期间停止 web 与 API，将故障现场的 `data/` 改名私下保留，再恢复备份中的**整个** `data/`、`.env` 及私有覆盖配置；不要混合新旧数据库文件，也不要单独复制运行中的 SQLite 主文件。检出记录的旧提交（`git switch --detach <saved-commit>`），执行 `docker compose build` 和 `docker compose up -d --force-recreate --wait`，重新核对健康与原有数据。如果旧源码／依赖已无法构建，可通过 `BIMAGE_API_IMAGE` / `BIMAGE_WEB_IMAGE` 指定保留的配套旧镜像标签，再执行 `docker compose up -d --no-build --pull never --force-recreate --wait`。不要让旧 API 使用已被新版迁移的数据，应同时恢复对应备份。回滚会丢失备份之后的变更，保留故障现场副本以便调查。
 
 接口说明见 [API 文档](docs/API.md)。
 
-## 构建检查
+## 源码构建
 
-安装依赖后，在仓库根目录执行 `npm run typecheck` 和 `npm run build`，可检查并编译前后端。公开部署源码不包含私有开发测试及其 npm 脚本。
+安装依赖后，在仓库根目录执行 `npm run build` 编译前后端。
 
 ## 许可证
 

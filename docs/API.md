@@ -4,9 +4,9 @@
 
 ## 认证
 
-- `GET /setup` → `{required:boolean}`。未初始化时，服务器运维人员从 `$DATA_DIR/setup-code.txt` 读取一次性初始化码。
-- `POST /setup {code,password}`：为内置 `admin` 设置密码，成功后创建会话。初始化只能成功一次，不提供公开注册。
-- `POST /login {login,password}`：`login` 为账号邮箱或内置账号 `admin`，返回 `{id,email,name,role,concurrency,csrf}` 并签发 HttpOnly/SameSite=Strict 会话 Cookie。旧访问密钥和 Bearer 认证不再有效。
+- `GET /setup` → `{required:boolean}`，不返回密钥或初始化链接。未初始化时，服务控制台打印携带 `setup_token` 查询参数的私密链接；运维人员通过 `docker compose logs api` 私下读取。地址仅来自 `BIMAGE_PUBLIC_URL`（默认 `http://localhost:6767`），不使用请求 Host。服务端以权限 0600 的 `$DATA_DIR/setup-code.txt` 保持重启有效。
+- `POST /setup {token,email,password}`：使用链接的一次性密钥、有效邮箱和至少 5 字符的密码创建首个管理员并签发会话；邮箱规范为小写。缺少或错误密钥返回 403，邮箱/密码无效返回 400；完成后所有初始化请求返回 409。并发请求只能有一个成功，成功后删除私有密钥文件。打开链接或 GET 不消费密钥；客户端移除地址参数，仅在显式提交表单时 POST，不持久化密钥，并使用 `Referrer-Policy: no-referrer`。
+- `POST /login {login,password}`：`login` 为账号邮箱（兼容已有 `admin` 账号），返回 `{id,email,name,role,concurrency,csrf}` 并签发 HttpOnly/SameSite=Strict 会话 Cookie。已有账号和会话保持不变；旧访问密钥和 Bearer 认证不再有效。不提供公开注册。
 - `GET /me` → 当前身份及cookie会话CSRF。写请求使用 `x-csrf-token`；退出 additionally 校验同源Origin。代理必须保留Host。
 - `POST /logout {}` → `{ok:true}`、过期cookie及服务端会话撤销；失效/禁用身份的原会话仍可退出。客户端独立5秒预算，失败仅短通知、阻止本标签自动恢复，不能保证网络故障时已撤销。
 - `GET /site` 为公开站点 `{title,icon}`；`GET /health` 不带 `/api` 返回 `{ok:true}`。

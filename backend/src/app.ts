@@ -82,6 +82,7 @@ export async function createApp(
   return {
     app,
     db: store.db,
+    get setupLink() { return installer.link; },
     close() {
       return (closing ??= queue.shutdown(() => store.db.close()));
     },

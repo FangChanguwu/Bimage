@@ -129,7 +129,7 @@ export function useSession() {
       ready.value = true;
     }
   }
-  async function authenticate(path: "/login" | "/setup", body: { password: string; login?: string; code?: string }) {
+  async function authenticate(path: "/login" | "/setup", body: { password: string; login?: string; token?: string; email?: string }) {
     if (authBusy || !ready.value) return;
     authBusy = true;
     // New credentials get a new lifetime: old callbacks keep an aborted API binding forever.
@@ -148,7 +148,7 @@ export function useSession() {
     }
   }
   const login = (login: string, password: string) => authenticate("/login", { login, password });
-  const setup = (code: string, password: string) => authenticate("/setup", { code, password });
+  const setup = (token: string, email: string, password: string) => authenticate("/setup", { token, email, password });
   async function logout() {
     if (authBusy) return "";
     authBusy = true;

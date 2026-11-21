@@ -21,6 +21,8 @@ const server = service.app.listen(port, process.env.HOST || "0.0.0.0", () => {
     `Bimage-panel REST ${version} listening on ` +
       (typeof address === "object" && address ? address.port : port),
   );
+  if (service.setupLink)
+    console.log("First administrator setup (keep this link private): " + service.setupLink);
 });
 let stopping = false;
 function stop(): void {

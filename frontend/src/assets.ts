@@ -1,2 +1,2 @@
-// Stable public module for cache regression tests and consumers.
+// Public entry point for the asset cache.
 export { assetCache } from "./composables/assetCache.ts";

@@ -9,6 +9,8 @@ import { t, locale } from './i18n';
 import ToastNotice, { type Notice } from './components/ToastNotice.vue';
 import { version } from '../package.json';
 import type { Site } from "./types";
+import { takeSetupToken } from './setup-link';
+let setupToken = takeSetupToken();
 const session = useSession();
 const { identity, pending, ready } = session;
 const notice = ref(""),
@@ -58,6 +60,7 @@ async function checkSetup() {
       notice.value = "初始化已完成，请使用管理员账号登录。";
     }
     setupRequired.value = result.required;
+    if (!result.required) setupToken = '';
   } catch {
     setupError.value = "无法确认初始化状态，请检查网络后重试。";
   } finally {
@@ -71,8 +74,9 @@ async function authenticate(identifier: string, password: string) {
   notice.value = "";
   try {
     if (setupRequired.value) {
-      await session.setup(identifier, password);
-      if (identity.value) setupRequired.value = false;
+      if (!setupToken) throw Error('请从服务器控制台打开初始化链接。');
+      await session.setup(setupToken, identifier, password);
+      if (identity.value) { setupRequired.value = false; setupToken = ''; }
     } else {
       await session.login(identifier, password);
     }
@@ -121,6 +125,7 @@ async function logout() {
       v-if="ready && setupRequired !== undefined"
       :key="String(setupRequired)"
       :setup="setupRequired"
+      :has-setup-token="!!setupToken"
       :pending="pending || checkingSetup"
       :error="notice"
       @submit="authenticate"

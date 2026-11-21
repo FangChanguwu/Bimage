@@ -6,7 +6,7 @@ export const errorMessages: Record<string, string> = {
   '请输入邮箱': 'Enter your email',
   '请求失败，请重试': 'Request failed. Please try again.',
   '服务器响应无效，请重试': 'Invalid server response. Please try again.',
-  '初始化验证码无效': 'Invalid setup code',
+  '初始化链接无效': 'Invalid setup link',
   '初始化已完成': 'Setup is already complete',
   '需要管理员权限': 'Administrator access is required',
   '无权访问': 'Access denied',
