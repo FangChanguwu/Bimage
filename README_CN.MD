@@ -10,7 +10,7 @@
 
 [English](README.MD) · **简体中文**
 
-![Version](https://img.shields.io/badge/version-0.3.1-blue)
+![Version](https://img.shields.io/badge/version-0.3.2-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 </div>
@@ -76,23 +76,77 @@ npm --prefix frontend run dev
 
 ## 部署
 
-### Docker Compose
+### 首次 Docker Compose 安装
 
-在仓库根目录执行：
+安装 Git、Docker Engine 和支持 `--wait` 的较新 Docker Compose v2+。宿主机无需 Node.js，也无需容器镜像仓库账号：Compose 从本仓库源码构建前后端，只需联网下载公开基础镜像和 npm 依赖。`compose.yaml` 中的镜像名是**本机构建标签**，不是已经发布的远程镜像，不要用 `docker compose pull` 代替更新。
 
 ```bash
-cp .env.example .env
-docker compose up -d --build --wait
+git clone https://github.com/FangChanguwu/Bimage.git
+cd Bimage
+# 仅在不存在时创建，切勿覆盖已有部署配置。
+test -f .env || cp .env.example .env
+# 启动前按下表编辑 .env。
+docker compose build
+docker compose up -d --wait
 ```
 
-默认入口为 [http://localhost:6767](http://localhost:6767)，API 不单独对外暴露端口。首次部署同样使用一次性初始化码；公网部署请使用 HTTPS，并限制上游端口仅供反向代理访问。
+访问 [http://localhost:6767](http://localhost:6767)。通过可信服务器终端私下执行 `sudo cat data/setup-code.txt`，将一次性初始化码填入设置页，并为 `admin` 自定义密码。不要将初始化码或密码发到聊天、截图或日志中。初始化成功后，权限为 0600 的码文件会被删除；已有账号无需重新初始化。
 
-### 环境配置
+用 `docker compose ps` 和 `curl --fail http://127.0.0.1:6767/health` 检查启动（修改端口后同步调整地址）。异常时在本机查看 `docker compose logs --tail=100 api web`，分享前先脱敏。两个服务均应为 healthy。仅发布 web 的 `6767` 端口，API 的 `6768` 保持内部访问。默认容器名固定，同一 Docker 主机上安装第二套时，还需修改容器名，仅改 Compose 项目名或端口不够。
 
-- `BIMAGE_PORT`：工作台对外端口，默认 `6767`。
-- `BIMAGE_COOKIE_SECURE`：通过 HTTPS 反向代理部署时设为 `true`，本机 HTTP 测试保留 `false`。
+### 网络与持久化数据
 
-对外部署时请启用 HTTPS，并备份 `data/`；其中包含任务历史、图片和供应商凭据，不应提交到 Git。更多运行参数见[后端配置](backend/README.md)，接口说明见 [API 文档](docs/API.md)。
+| `.env` 配置 | 默认值 | 用途 |
+| --- | --- | --- |
+| `BIMAGE_PORT` | `6767` | 工作台对外端口。 |
+| `BIMAGE_BIND_HOST` | `0.0.0.0` | HTTPS 反向代理位于同一宿主机时设为 `127.0.0.1`。 |
+| `BIMAGE_COOKIE_SECURE` | `false` | HTTPS 访问设为 `true`；仅本机 HTTP 测试保留 `false`。 |
+| `BIMAGE_CONCURRENCY` | `8` | 全站生图子任务并发（1–8），账号另有并发限制。 |
+
+不要通过公网 HTTP 传输登录凭据。对外服务应使用同源 HTTPS 反向代理，保留原始 `Host`，转发 `/api/` 和 `/health`，并限制上游端口仅供代理访问。代理也在容器中时，使用其可达的私网上游，而不是代理自身的 `127.0.0.1`。需要按客户端独立限流时，应在两跳分别固定可信代理的精确 socket 地址，并由入口覆盖 `X-Real-IP`，不要信任任意客户端转发头；详见[后端配置](backend/README.md)。
+
+`./data` 绑定挂载到 API，保存 SQLite、账号、供应商凭据、图片、草稿和任务历史。整个目录和 `.env` 都应私密保存并备份。重建镜像或容器不会删除这些数据。更新时切勿删除 `data/`、让两个 API worker 同时使用它，或执行 `docker compose down -v` 清理。保留部署专用 Compose 覆盖文件，下列每一步均需使用同一套选项。
+
+### 更新已有部署
+
+在**原检出目录**中操作，保留同一份 `.env`、数据目录和 Compose 覆盖配置。先安排维护窗口：停止新任务提交，等待所有用户的运行中／排队生图任务结束（或在界面取消排队任务），也等待提示词优化、上传完成。下列命令先关闭网页入口，再检查全站队列，不输出账号或供应商数据。若检查失败，API 保持运行；执行 `docker compose up -d --wait web` 恢复入口，清空队列后重试。切勿强行更新活跃队列：中断的付费请求可能已被上游计费。
+
+```bash
+(
+  set -eu
+  docker compose stop web
+  docker compose exec -T api node --input-type=module -e '
+    import { DatabaseSync } from "node:sqlite";
+    const db = new DatabaseSync(process.env.DATA_DIR + "/studio.sqlite", { readOnly: true });
+    const { n } = db.prepare("SELECT count(*) n FROM tasks WHERE status IN (?, ?)").get("queued", "running");
+    db.close();
+    if (n !== 0) throw new Error("Queue is not idle; drain it before updating");
+    console.log("Queue idle");
+  '
+  docker compose stop api
+  umask 077
+  backup="$(pwd)/../Bimage-backup-$(date -u +%Y%m%dT%H%M%SZ)"
+  mkdir -m 700 "$backup"
+  cp -a data "$backup/data"
+  cp -p .env "$backup/.env"
+  git rev-parse HEAD > "$backup/source-commit.txt"
+  docker compose images > "$backup/images.txt"
+  printf 'Private backup: %s\n' "$backup"
+  git pull --ff-only
+  docker compose build
+  docker compose up -d --force-recreate --wait
+)
+```
+
+部署检出目录应保持无本地源码改动；`git pull` 失败时解决冲突，不要强制重置丢弃修改。备份、拉取或构建失败后 API 仍停止，应先解决问题并确认备份完整再恢复。`--force-recreate` 会替换**两个**服务，确保 nginx 重新解析 API 地址，不沿用旧容器 IP。更新不会覆盖 `.env`，请手动比较新版 `.env.example`；私有覆盖文件和入口代理配置也应另行复制到备份目录。
+
+更新后按前述方法检查健康状态，再用已有账号登录，核对设置、历史和一张原图。仅健康检查通过并不能证明数据保留成功。
+
+### 回滚
+
+验收前保留备份、旧源码提交和旧本地镜像。维护期间停止 web 与 API，将故障现场的 `data/` 改名私下保留，再恢复备份中的**整个** `data/`、`.env` 及私有覆盖配置；不要混合新旧数据库文件，也不要单独复制运行中的 SQLite 主文件。检出记录的旧提交（`git switch --detach <saved-commit>`），执行 `docker compose build` 和 `docker compose up -d --force-recreate --wait`，重新核对健康与原有数据。如果旧源码／依赖已无法构建，可通过 `BIMAGE_API_IMAGE` / `BIMAGE_WEB_IMAGE` 指定保留的配套旧镜像标签，再执行 `docker compose up -d --no-build --pull never --force-recreate --wait`。不要让旧 API 使用已被新版迁移的数据，应同时恢复对应备份。回滚会丢失备份之后的变更，保留故障现场副本以便调查。
+
+接口说明见 [API 文档](docs/API.md)。
 
 ## 构建检查
 
