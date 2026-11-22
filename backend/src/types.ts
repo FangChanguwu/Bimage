@@ -100,4 +100,6 @@ export interface AppOptions {
   worker?: boolean;
   concurrency?: number;
   retryMs?: number;
+  frontendDir?: string;
+  onRestart?: () => void;
 }

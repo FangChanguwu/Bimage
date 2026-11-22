@@ -1,10 +1,11 @@
 {
   "name": "bimage-panel",
-  "version": "0.3.7",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "scripts": {
     "build": "npm --prefix backend run build && npm --prefix frontend run build",
-    "typecheck": "npm --prefix backend run typecheck && npm --prefix frontend run typecheck"
+    "typecheck": "npm --prefix backend run typecheck && npm --prefix frontend run typecheck",
+    "pack:release": "node scripts/pack-release.mjs"
   }
 }

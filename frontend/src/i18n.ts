@@ -3,13 +3,14 @@ import { shellMessages } from './locales/shell';
 import { creationMessages } from './locales/creation';
 import { imageMessages } from './locales/images';
 import { errorMessages } from './locales/errors';
+import { agentMessages } from './locales/agent';
 export type Locale = 'zh-CN' | 'en';
 const STORAGE_KEY = 'bimage-language';
 function initialLocale(): Locale {
   try { return localStorage.getItem(STORAGE_KEY) === 'en' ? 'en' : 'zh-CN'; } catch { return 'zh-CN'; }
 }
 export const locale = ref<Locale>(initialLocale());
-const messages: Record<string, string> = { ...errorMessages, ...shellMessages, ...creationMessages, ...imageMessages };
+const messages: Record<string, string> = { ...errorMessages, ...shellMessages, ...creationMessages, ...imageMessages, ...agentMessages };
 export function setLocale(value: Locale) { locale.value = value; }
 export function toggleLocale() { setLocale(locale.value === 'en' ? 'zh-CN' : 'en'); }
 /** Application-owned UI copy only. Never run translation over user data. */

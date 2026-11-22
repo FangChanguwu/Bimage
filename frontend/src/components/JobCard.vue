@@ -118,8 +118,10 @@ async function deleteJob() {
       {{ job.form.prompt.replace(/\s+/g, " ").trim() }}
     </button>
     <p class="job-meta">
-      {{ job.form.model
-      }}<span>{{ t('{completed} / {count} 张', { completed: success.length, count: job.form.count }) }}</span>
+      <span class="job-meta-model">
+        <span v-if="job.form.source === 'agent'" class="job-source-badge" :title="t('由 Agent 创作生成')">Agent</span>
+        {{ job.form.model }}
+      </span><span>{{ t('{completed} / {count} 张', { completed: success.length, count: job.form.count }) }}</span>
     </p>
     <div class="result-images">
       <div v-for="(task, i) in job.tasks" :key="task.id" class="result-image">

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, watch, toRaw, nextTick } from "vue";
 import {
+  Sparkles,
   WandSparkles,
   Settings as SettingsIcon,
   LogOut,
@@ -20,6 +21,7 @@ import QuickPrompt from "./QuickPrompt.vue";
 import SettingsPanel from "./SettingsPanel.vue";
 import UserManagement from "./UserManagement.vue";
 import FavoritesView from "./FavoritesView.vue";
+import AgentView from "./AgentView.vue";
 import LanguageSwitch from './LanguageSwitch.vue';
 import VersionModal from './VersionModal.vue';
 import { version as appVersion } from '../../package.json';
@@ -53,7 +55,7 @@ const emit = defineEmits<{
   logout: [];
   site: [site: Site];
 }>();
-const page = ref<"studio" | "favorites" | "users" | "settings">("studio"),
+const page = ref<"agent" | "studio" | "favorites" | "users" | "settings">("studio"),
   providers = ref<Provider[]>([]),
   favorites = ref<FavoriteItem[]>([]),
   favoritesLoading = ref(false),
@@ -70,8 +72,8 @@ const page = ref<"studio" | "favorites" | "users" | "settings">("studio"),
   loading = ref(true);
 const isAdmin = computed(() => props.identity.role === "admin");
 const displayVersion = computed(() => (isAdmin.value && versionSnapshot.value?.current) || appVersion);
-const pageTitle = computed(() => t(({ studio: "图像工作台", favorites: "收藏夹", users: "用户管理", settings: "系统设置" })[page.value]));
-const pageContext = computed(() => t(({ studio: "让想法，成为画面。", favorites: "精选画面与完整创作记录。", users: "管理登录账号与图像请求权限。", settings: "连接服务，整理创作偏好。" })[page.value]));
+const pageTitle = computed(() => t(({ agent: "Agent 创作", studio: "图像工作台", favorites: "收藏夹", users: "用户管理", settings: "系统设置" })[page.value]));
+const pageContext = computed(() => t(({ agent: "对话构思、批量出图与自动视觉验收。", studio: "让想法，成为画面。", favorites: "精选画面与完整创作记录。", users: "管理登录账号与图像请求权限。", settings: "连接服务，整理创作偏好。" })[page.value]));
 const favoriteAssets = computed(() => new Set(favorites.value.map((item) => item.asset)));
 const studioReentered = ref(false);
 watch(page, (current, previous) => {
@@ -154,6 +156,13 @@ function change(next: GenerationForm) {
   // SettingsPanel saves the whole settings object, so never leave its form stale.
   settings.value = { ...settings.value, form: next };
   persist();
+}
+function patchSettings(patch: Partial<Settings>) {
+  settings.value = { ...settings.value, ...patch };
+  persist();
+}
+function restorePartialForm(patch: Partial<GenerationForm>) {
+  restoreFromForm({ ...emptyForm(), ...form.value, ...patch });
 }
 async function refresh() {
   const [p] = await Promise.all([
@@ -443,6 +452,15 @@ function defaultsSaved(value: Settings) {
       <nav :aria-label="t('主导航')">
         <button
           type="button"
+          :aria-label="t('Agent 创作')"
+          :aria-current="page === 'agent' ? 'page' : undefined"
+          :class="{ selected: page === 'agent' }"
+          @click="page = 'agent'"
+        >
+          <Sparkles :size="18" /><span>{{ t('Agent 创作') }}</span>
+        </button>
+        <button
+          type="button"
           :aria-label="t('图像工作台')"
           :aria-current="page === 'studio' ? 'page' : undefined"
           :class="{ selected: page === 'studio' }"
@@ -506,6 +524,22 @@ function defaultsSaved(value: Settings) {
         <div />
         <div />
       </div>
+      <AgentView
+        v-else-if="page === 'agent'"
+        :providers="available"
+        :settings="settings"
+        :form="form"
+        :favorite-assets="favoriteAssets"
+        :api="api"
+        :signal="signal"
+        :run="run"
+        @update:settings="patchSettings"
+        @restore-form="restorePartialForm"
+        @toggle-favorite="(payload) => toggleFavorite(payload.jobId, payload.taskId, payload.asset)"
+        @jobs-changed="void refreshHistory()"
+        @go-settings="page = 'settings'"
+        @notify="(message, type) => notify(message, type)"
+      />
       <div v-else-if="page === 'studio'" class="workspace" :class="{ 'studio-reentered': studioReentered }">
         <Composer
           :form="form"

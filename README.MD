@@ -10,7 +10,7 @@
 
 **English** · [简体中文](README_CN.MD)
 
-![Version](https://img.shields.io/badge/version-0.3.7-blue)
+![Version](https://img.shields.io/badge/version-0.4.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 </div>
@@ -21,13 +21,14 @@ Connect your own OpenAI-compatible provider to generate images, edit with refere
 
 ## Features
 
+- **Agent creation mode** — Conversational multi-turn workspace with reference image upload/paste, thinking effort & speed tier controls, editable batch generation plans, live queue gallery, automatic vision inspection & iterative retries, and curated deliverables.
 - **Generate & edit** — Text-to-image, reference editing (up to 16 images), one-click **Use as reference** directly from task cards, lightbox, or favorites without re-uploading, auto or custom dimensions, and PNG / JPEG / WebP export.
 - **Local repair & pixel mask inpainting** — Dual-mode editor supporting native transparent PNG pixel masks (`/images/edits` `mask`, with brush, eraser, rectangle/circle selection, invert, undo/redo) as well as freehand annotation guides.
 - **Prompt optimization** — Draft prompts from short briefs or review inline word-level diffs before applying.
 - **Favorites gallery & task details** — Star images from history or the lightbox into a dedicated sidebar pure-image gallery; click any artwork to inspect its full prompt, generation settings, reference images, and pixel mask, with asset GC protection even after the original job is deleted.
 - **Persistent queue** — Submits one request per image and saves progress; cancel queued items without interrupting running ones.
 - **History & fast loading** — Full-history prompt search, paginated loading, one-click settings restore, original / batch ZIP downloads, and server-generated thumbnails with account-scoped browser cache.
-- **Multi-user & admin** — Account login, shared providers, custom branding, per-user concurrency limits, and admin-only GitHub update checks, one-click update to latest release, and version rollback.
+- **Multi-user & admin** — Account login, shared providers, custom branding, per-user concurrency limits, and admin-only GitHub update checks, in-container hot updates with automatic crash rollback, and one-click version rollback.
 - **Bilingual UI** — Instant English / Simplified Chinese switching with draft preservation.
 
 ### Prompt Optimization

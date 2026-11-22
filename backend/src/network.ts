@@ -78,9 +78,52 @@ export function createProviderNetwork(validate = validateUrl) {
   return {
     validate,
     fetch: (url: string, options?: RequestInit) => safeFetch(url, options, validate),
+    fetchStream: (url: string, options?: RequestInit, timeoutMs = 300000) =>
+      safeFetchStream(url, options, validate, timeoutMs),
   };
 }
 export type ProviderNetwork = ReturnType<typeof createProviderNetwork>;
+
+async function safeFetchStream(
+  url: string,
+  options: RequestInit = {},
+  validate: typeof validateUrl,
+  timeoutMs = 300000,
+): Promise<{ response: Response; close: () => Promise<void> }> {
+  const { addresses } = await validate(url, true);
+  const dispatcher = new Agent({
+    connect: {
+      lookup(_host, lookupOptions, callback) {
+        const address = addresses[0];
+        if (lookupOptions.all) callback(null, addresses);
+        else callback(null, address.address, address.family);
+      },
+    },
+    headersTimeout: timeoutMs,
+    bodyTimeout: timeoutMs,
+  });
+  try {
+    const timeout = AbortSignal.timeout(timeoutMs);
+    const signal = options.signal
+      ? AbortSignal.any([options.signal, timeout])
+      : timeout;
+    const response = await fetch(url, {
+      ...options,
+      signal,
+      dispatcher,
+      redirect: "error",
+    });
+    return {
+      response: response as unknown as Response,
+      close: async () => {
+        await dispatcher.close().catch(() => {});
+      },
+    };
+  } catch (error) {
+    await dispatcher.close().catch(() => {});
+    throw error;
+  }
+}
 
 async function safeFetch(
   url: string,
@@ -146,4 +189,26 @@ export async function upstream(
   );
   if (!response.ok) throw fail(response.status, "上游 HTTP " + response.status);
   return object(await response.json());
+}
+export async function upstreamStream(
+  network: ProviderNetwork,
+  provider: ProviderConfig,
+  endpoint: string,
+  payload: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<{ response: Response; close: () => Promise<void> }> {
+  return network.fetchStream(
+    provider.baseUrl + endpoint,
+    {
+      method: "POST",
+      headers: {
+        authorization: "Bearer " + provider.apiKey,
+        "content-type": "application/json",
+        accept: "text/event-stream, application/json",
+      },
+      body: JSON.stringify(payload),
+      signal,
+    },
+    300000,
+  );
 }

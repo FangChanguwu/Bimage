@@ -62,6 +62,43 @@ export class Store {
             UNIQUE(owner, asset)
           );
           CREATE INDEX IF NOT EXISTS favorites_owner_created ON favorites(owner, createdAt DESC, id DESC);
+          CREATE TABLE IF NOT EXISTS agent_sessions(
+            id TEXT NOT NULL PRIMARY KEY,
+            owner TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+            title TEXT NOT NULL,
+            config TEXT NOT NULL DEFAULT '{}',
+            createdAt TEXT NOT NULL,
+            updatedAt TEXT NOT NULL
+          );
+          CREATE INDEX IF NOT EXISTS agent_sessions_owner_updated ON agent_sessions(owner, updatedAt DESC, id DESC);
+          CREATE TABLE IF NOT EXISTS agent_messages(
+            id TEXT NOT NULL PRIMARY KEY,
+            sessionId TEXT NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+            owner TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL DEFAULT '',
+            reasoning TEXT NOT NULL DEFAULT '',
+            attachments TEXT NOT NULL DEFAULT '[]',
+            cards TEXT NOT NULL DEFAULT '[]',
+            createdAt TEXT NOT NULL
+          );
+          CREATE INDEX IF NOT EXISTS agent_messages_session_created ON agent_messages(sessionId, createdAt ASC, id ASC);
+          CREATE TABLE IF NOT EXISTS agent_runs(
+            id TEXT NOT NULL PRIMARY KEY,
+            sessionId TEXT NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+            owner TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+            status TEXT NOT NULL,
+            budgetImages INTEGER NOT NULL DEFAULT 8,
+            usedImages INTEGER NOT NULL DEFAULT 0,
+            maxRetries INTEGER NOT NULL DEFAULT 2,
+            usedRetries INTEGER NOT NULL DEFAULT 0,
+            pendingPlan TEXT,
+            jobIds TEXT NOT NULL DEFAULT '[]',
+            error TEXT,
+            startedAt TEXT NOT NULL,
+            finishedAt TEXT
+          );
+          CREATE INDEX IF NOT EXISTS agent_runs_session_started ON agent_runs(sessionId, startedAt DESC, id DESC);
         `);
         const additions: Record<string, Record<string, string>> = {
           jobs: { startedAt: "TEXT", finishedAt: "TEXT" },

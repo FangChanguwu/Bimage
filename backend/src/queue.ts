@@ -165,6 +165,44 @@ export class Queue {
       });
     return { ...job, form: JSON.parse(job.form) as ImageForm, tasks };
   }
+  enqueue(input: unknown, identity: Owner) {
+    const form = this.validate(input, identity),
+      id = randomUUID();
+    this.store.transaction(() => {
+      this.store.run(
+        "INSERT INTO jobs(id,owner,form,status,created) VALUES(?,?,?,?,?)",
+        id,
+        identity.id,
+        JSON.stringify(form),
+        "queued",
+        new Date().toISOString(),
+      );
+      for (let index = 0; index < form.count; index++)
+        this.store.run(
+          "INSERT INTO tasks(id,job,status) VALUES(?,?,?)",
+          randomUUID(),
+          id,
+          "queued",
+        );
+    });
+    return this.view(this.ownJob(id, identity));
+  }
+  cancelQueued(id: string, identity: Owner) {
+    const job = this.ownJob(id, identity);
+    const cancelledCount = this.store.transaction(() => {
+      // Running tasks already belong to the worker; let them finish and save their results.
+      const cancelled = this.store.all<{ id: string }>(
+        "UPDATE tasks SET status='cancelled',error=NULL WHERE job=? AND status='queued' RETURNING id",
+        job.id,
+      ).length;
+      if (cancelled) this.refresh(job.id);
+      return cancelled;
+    });
+    return { ...this.view(this.ownJob(job.id, identity)), cancelledCount };
+  }
+  getJobView(id: string, identity: Owner) {
+    return this.view(this.ownJob(id, identity));
+  }
   refresh(id: string): void {
     const states = this.store
       .all<{ status: TaskStatus }>("SELECT status FROM tasks WHERE job=?", id)
@@ -422,27 +460,8 @@ export class Queue {
   }
   mount(app: Express): void {
     app.post("/api/jobs", (request, response) => {
-      const identity = user(request),
-        form = this.validate(body(request), identity),
-        id = randomUUID();
-      this.store.transaction(() => {
-        this.store.run(
-          "INSERT INTO jobs(id,owner,form,status,created) VALUES(?,?,?,?,?)",
-          id,
-          identity.id,
-          JSON.stringify(form),
-          "queued",
-          new Date().toISOString(),
-        );
-        for (let index = 0; index < form.count; index++)
-          this.store.run(
-            "INSERT INTO tasks(id,job,status) VALUES(?,?,?)",
-            randomUUID(),
-            id,
-            "queued",
-          );
-      });
-      response.json(this.view(this.ownJob(id, identity)));
+      const identity = user(request);
+      response.json(this.enqueue(body(request), identity));
     });
     const history = new History(this.store);
     app.get("/api/jobs", (request, response) => {
@@ -505,18 +524,8 @@ export class Queue {
       }
     });
     app.post("/api/jobs/:id/cancel", (request, response) => {
-      const identity = user(request),
-        job = this.ownJob(param(request), identity);
-      const cancelledCount = this.store.transaction(() => {
-        // Running tasks already belong to the worker; let them finish and save their results.
-        const cancelled = this.store.all<{ id: string }>(
-          "UPDATE tasks SET status='cancelled',error=NULL WHERE job=? AND status='queued' RETURNING id",
-          job.id,
-        ).length;
-        if (cancelled) this.refresh(job.id);
-        return cancelled;
-      });
-      response.json({ ...this.view(this.ownJob(job.id, identity)), cancelledCount });
+      const identity = user(request);
+      response.json(this.cancelQueued(param(request), identity));
     });
     app.post("/api/jobs/:id/retry", (request, response) => {
       if (body(request).confirm !== true)

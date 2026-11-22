@@ -11,6 +11,12 @@ export function resolveTextDefaults(providers: Provider[], settings: Settings): 
     legacy ? settings.textProvider : settings.quickProvider,
     legacy ? settings.textModel : settings.quickModel,
   );
+  const legacyAgent = !Object.hasOwn(settings, "agentProvider") && !Object.hasOwn(settings, "agentModel");
+  const agent = resolveChoice(providers, "text",
+    legacyAgent ? settings.textProvider : settings.agentProvider,
+    legacyAgent ? settings.textModel : settings.agentModel,
+  );
   return { ...settings, textProvider: text.providerId, textModel: text.model,
-    quickProvider: quick.providerId, quickModel: quick.model };
+    quickProvider: quick.providerId, quickModel: quick.model,
+    agentProvider: agent.providerId, agentModel: agent.model };
 }

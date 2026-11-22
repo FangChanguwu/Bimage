@@ -3,7 +3,7 @@ import type { Express } from "express";
 import rateLimit from "express-rate-limit";
 import { Store } from "./db.js";
 import { body, fail, param, user } from "./http.js";
-import { createProviderNetwork, upstream, type ProviderNetwork } from "./network.js";
+import { createProviderNetwork, upstream, upstreamStream, type ProviderNetwork } from "./network.js";
 import type { FormData } from "undici";
 import { cleanModels, modelInfo } from "./models.js";
 import type { ClientRateLimitKey } from "./client-rate-limit.js";
@@ -15,6 +15,9 @@ export class Providers {
   constructor(private store: Store, private network: ProviderNetwork = createProviderNetwork()) {}
   request(provider: ProviderConfig, endpoint: string, payload?: Record<string, unknown> | FormData, signal?: AbortSignal) {
     return upstream(this.network, provider, endpoint, payload, signal);
+  }
+  requestStream(provider: ProviderConfig, endpoint: string, payload: Record<string, unknown>, signal?: AbortSignal) {
+    return upstreamStream(this.network, provider, endpoint, payload, signal);
   }
   download(url: string, signal: AbortSignal) {
     return this.network.fetch(url, { signal });

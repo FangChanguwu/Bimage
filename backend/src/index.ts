@@ -8,12 +8,34 @@ const dir =
 const port = process.env.PORT === undefined ? 6768 : Number(process.env.PORT);
 if (!Number.isInteger(port) || port < 0 || port > 65535)
   throw new Error("Invalid PORT");
+let stopping = false;
+let server: ReturnType<typeof service.app.listen> | undefined;
+function shutdown(exitCode: number): void {
+  if (stopping) return;
+  stopping = true;
+  const timeout = setTimeout(() => process.exit(exitCode || 1), 5000);
+  timeout.unref();
+  const finish = () => {
+    void service.close().then(() => {
+      clearTimeout(timeout);
+      process.exit(exitCode);
+    });
+  };
+  if (server) {
+    server.close(finish);
+  } else {
+    finish();
+  }
+  // Abort upstream before waiting for open HTTP connections to finish.
+  void service.close();
+}
 const service = await createApp({
   dir,
   concurrency: Math.max(1, Math.min(8, Number(process.env.CONCURRENCY) || 1)),
+  onRestart: () => shutdown(process.env.BIMAGE_LAUNCHER === "1" ? 75 : 0),
 });
-const server = service.app.listen(port, process.env.HOST || "0.0.0.0", () => {
-  const address = server.address();
+server = service.app.listen(port, process.env.HOST || "0.0.0.0", () => {
+  const address = server?.address();
   const { version } = JSON.parse(
     readFileSync(new URL("../package.json", import.meta.url), "utf8"),
   ) as { version: string };
@@ -24,20 +46,5 @@ const server = service.app.listen(port, process.env.HOST || "0.0.0.0", () => {
   if (service.setupLink)
     console.log("First administrator setup (keep this link private): " + service.setupLink);
 });
-let stopping = false;
-function stop(): void {
-  if (stopping) return;
-  stopping = true;
-  const timeout = setTimeout(() => process.exit(1), 5000);
-  timeout.unref();
-  server.close(() => {
-    void service.close().then(() => {
-      clearTimeout(timeout);
-      process.exit(0);
-    });
-  });
-  // Abort upstream before waiting for open HTTP connections to finish.
-  void service.close();
-}
-process.once("SIGTERM", stop);
-process.once("SIGINT", stop);
+process.once("SIGTERM", () => shutdown(0));
+process.once("SIGINT", () => shutdown(0));
