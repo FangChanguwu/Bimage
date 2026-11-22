@@ -952,7 +952,7 @@ button.version-pill.open {
   gap: 12px;
 }
 .result-image {
-  min-width: 0;
+  min-width: min(64px, 100%);
   max-width: 100%;
 }
 .image-open {
@@ -1019,7 +1019,7 @@ button.version-pill.open {
 }
 .result-caption {
   /* Wrap the caption within the preview width instead of widening the tile. */
-  contain: inline-size;
+  container-type: inline-size;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -1028,6 +1028,7 @@ button.version-pill.open {
 }
 .image-tools {
   display: flex;
+  flex-wrap: wrap;
   gap: 5px;
 }
 .image-tools .icon-button {
@@ -1036,6 +1037,13 @@ button.version-pill.open {
   height: 28px;
   min-height: 28px;
   background: var(--surface);
+}
+@container (max-width: 126px) {
+  .image-tools {
+    flex-basis: 100%;
+    display: grid;
+    grid-template-columns: repeat(2, 28px);
+  }
 }
 .actual-spec {
   overflow-wrap: anywhere;
