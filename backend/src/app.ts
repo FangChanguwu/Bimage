@@ -11,6 +11,7 @@ import { Providers } from "./providers.js";
 import { Assets } from "./assets.js";
 import { mountRewrite } from "./rewrite.js";
 import { Queue } from "./queue.js";
+import { Favorites } from "./favorites.js";
 import { mountVersion } from "./version.js";
 import { clientRateLimitKey } from "./client-rate-limit.js";
 import type { ProviderNetwork } from "./network.js";
@@ -75,6 +76,7 @@ export async function createApp(
   assets.mount(app);
   mountRewrite(app, providers, assets, keyGenerator);
   queue.mount(app);
+  new Favorites(store, assets).mount(app);
   app.use("/api", (_request, response) =>
     response.status(404).json({ error: "接口不存在" }),
   );

@@ -111,7 +111,8 @@ export class Assets {
       // A new upload must not inherit the lifetime of a job with identical output.
       const existing = this.store.get<{ id: string }>(
         `SELECT id FROM assets AS a WHERE owner=? AND mime=? AND bytes=?
-         AND NOT EXISTS (SELECT 1 FROM tasks WHERE asset=a.id) LIMIT 1`,
+         AND NOT EXISTS (SELECT 1 FROM tasks WHERE asset=a.id)
+         AND NOT EXISTS (SELECT 1 FROM favorites WHERE asset=a.id) LIMIT 1`,
         owner,
         mime,
         bytes,

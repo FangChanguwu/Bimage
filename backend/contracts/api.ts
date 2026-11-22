@@ -41,6 +41,7 @@ export interface GenerationForm {
   quality: string;
   output_format: string;
   references: string[];
+  mask?: string;
   aspect_ratio?: string;
   manualSize?: { size: string; ratio: string; resolution?: string };
 }
@@ -82,6 +83,18 @@ export interface Job {
   created: string;
   startedAt?: string;
   finishedAt?: string;
+}
+export interface FavoriteItem {
+  id: string;
+  asset: string;
+  mime?: string;
+  width?: number | null;
+  height?: number | null;
+  jobId: string;
+  taskId: string;
+  form: GenerationForm;
+  jobCreated: string;
+  createdAt: string;
 }
 export type Api = <T = unknown>(
   path: string,

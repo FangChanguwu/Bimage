@@ -280,26 +280,22 @@ export function mountVersion(
     response.json(buildSnapshot(current, git, data));
   });
 
-  app.post("/api/admin/version/rollback", admin, checkRate, async (request, response) => {
-    const input = body(request);
-    const rawTag = typeof input.tag === "string" ? input.tag.trim() : "";
-    if (!TAG_PATTERN.test(rawTag))
-      throw fail(400, "无效的目标版本号");
-
+  async function ensureCleanGitForSwitch(actionLabel: string): Promise<GitInfo> {
     const active = store.get<{ count: number }>(
       "SELECT COUNT(*) AS count FROM tasks WHERE status IN ('queued','running')",
     );
     if (active && active.count > 0)
-      throw fail(409, "当前有正在执行或排队中的生成任务，请等待任务完成后再回退版本");
+      throw fail(409, `当前有正在执行或排队中的生成任务，请等待任务完成后再${actionLabel}版本`);
 
     const git = await inspectGit();
     if (!git.available)
-      throw fail(400, "当前运行环境非 Git 源码目录，请按下方命令手动回退版本");
+      throw fail(400, `当前运行环境非 Git 源码目录，请按下方命令手动${actionLabel}版本`);
     if (git.dirty)
-      throw fail(409, "工作区存在未提交修改，为避免覆盖本地改动已中止回退；请先提交或暂存后再试");
+      throw fail(409, `工作区存在未提交修改，为避免覆盖本地改动已中止${actionLabel}；请先提交或暂存后再试`);
+    return git;
+  }
 
-    const tag = rawTag.startsWith("v") ? rawTag : `v${rawTag}`;
-    // Ensure the tag exists locally; fetch from origin if absent.
+  async function ensureLocalTag(tag: string): Promise<void> {
     try {
       await runGit(["rev-parse", "--verify", `refs/tags/${tag}`], 5_000);
     } catch {
@@ -309,9 +305,72 @@ export function mountVersion(
         throw fail(404, `未在 GitHub 仓库中找到标签 ${tag}`);
       }
     }
+  }
+
+  app.post("/api/admin/version/update", admin, checkRate, async (_request, response) => {
+    const current = readCurrentVersion();
+    let data = await refreshReleases(current, false);
+    let latest = data.releases.find((item) => !item.prerelease) ?? data.releases[0] ?? null;
+    if (!latest || compareSemver(latest.version, current) <= 0) {
+      data = await refreshReleases(current, true);
+      latest = data.releases.find((item) => !item.prerelease) ?? data.releases[0] ?? null;
+    }
+    if (!latest)
+      throw fail(404, "未获取到可用的 GitHub 发布版本");
+    if (compareSemver(latest.version, current) <= 0)
+      throw fail(409, "当前已是最新版本，无需更新");
+    if (!TAG_PATTERN.test(latest.tag))
+      throw fail(400, "无效的目标版本号");
+
+    const git = await ensureCleanGitForSwitch("更新");
+    const tag = latest.tag;
+    await ensureLocalTag(tag);
+
+    let fastForwarded = false;
+    if (git.branch && git.branch !== "HEAD") {
+      const canFastForward = await runGit(
+        ["merge-base", "--is-ancestor", "HEAD", `refs/tags/${tag}`],
+        5_000,
+      ).then(() => true, () => false);
+      if (canFastForward) {
+        try {
+          await runGit(["merge", "--ff-only", `refs/tags/${tag}`], 15_000);
+          fastForwarded = true;
+        } catch {
+          fastForwarded = false;
+        }
+      }
+    }
+    if (!fastForwarded) {
+      try {
+        await runGit(["checkout", "--detach", `refs/tags/${tag}`], 15_000);
+      } catch {
+        throw fail(500, `更新到版本 ${tag} 失败`);
+      }
+    }
+
+    const commit = await runGit(["rev-parse", "--short", "HEAD"], 5_000).catch(() => "");
+    response.json({
+      ok: true,
+      tag,
+      commit,
+      restartRequired: true,
+      message: `已更新源码至 ${tag}${commit ? ` (${commit})` : ""}，请重新构建并重启服务生效`,
+    });
+  });
+
+  app.post("/api/admin/version/rollback", admin, checkRate, async (request, response) => {
+    const input = body(request);
+    const rawTag = typeof input.tag === "string" ? input.tag.trim() : "";
+    if (!TAG_PATTERN.test(rawTag))
+      throw fail(400, "无效的目标版本号");
+
+    await ensureCleanGitForSwitch("回退");
+    const tag = rawTag.startsWith("v") ? rawTag : `v${rawTag}`;
+    await ensureLocalTag(tag);
 
     try {
-      await runGit(["checkout", "--detach", tag], 15_000);
+      await runGit(["checkout", "--detach", `refs/tags/${tag}`], 15_000);
     } catch {
       throw fail(500, `切换到版本 ${tag} 失败`);
     }

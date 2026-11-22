@@ -50,6 +50,18 @@ export class Store {
           );
           CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY,owner TEXT,form TEXT,status TEXT,created TEXT);
           CREATE TABLE IF NOT EXISTS tasks(id TEXT PRIMARY KEY,job TEXT,status TEXT,attempts INTEGER DEFAULT 0,next INTEGER DEFAULT 0,asset TEXT,error TEXT);
+          CREATE TABLE IF NOT EXISTS favorites(
+            id TEXT NOT NULL PRIMARY KEY,
+            owner TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+            asset TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+            jobId TEXT NOT NULL,
+            taskId TEXT NOT NULL,
+            form TEXT NOT NULL,
+            jobCreated TEXT NOT NULL,
+            createdAt TEXT NOT NULL,
+            UNIQUE(owner, asset)
+          );
+          CREATE INDEX IF NOT EXISTS favorites_owner_created ON favorites(owner, createdAt DESC, id DESC);
         `);
         const additions: Record<string, Record<string, string>> = {
           jobs: { startedAt: "TEXT", finishedAt: "TEXT" },

@@ -1,7 +1,7 @@
 services:
   api:
     build: .
-    image: "${BIMAGE_API_IMAGE:-bimage-panel-api:0.3.5}"
+    image: "${BIMAGE_API_IMAGE:-bimage-panel-api:0.3.6}"
     container_name: Bimage-panel-api
     restart: unless-stopped
     environment:
@@ -27,7 +27,7 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    image: "${BIMAGE_WEB_IMAGE:-bimage-panel-web:0.3.5}"
+    image: "${BIMAGE_WEB_IMAGE:-bimage-panel-web:0.3.6}"
     container_name: Bimage-panel
     restart: unless-stopped
     depends_on:

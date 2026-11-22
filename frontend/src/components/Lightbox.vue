@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch, onMounted, onBeforeUnmount } from "vue";
-import { ZoomIn, ZoomOut, RotateCcw, Download, Copy, ChevronLeft, ChevronRight, LoaderCircle } from "lucide-vue-next";
+import { ZoomIn, ZoomOut, RotateCcw, Download, Copy, ChevronLeft, ChevronRight, LoaderCircle, Star, ImagePlus } from "lucide-vue-next";
 import Modal from "./Modal.vue";
 import AssetImage from "./AssetImage.vue";
 import { assetCache, download, copyImage } from "../composables/assetCache";
@@ -14,8 +14,15 @@ const props = defineProps<{
   mime?: string;
   items?: LightboxItem[];
   initialIndex?: number;
+  canFavorite?: boolean;
+  canUseAsReference?: boolean;
+  isFavorite?: (asset: string) => boolean;
 }>();
-const emit = defineEmits<{ close: [] }>();
+const emit = defineEmits<{
+  close: [];
+  toggleFavorite: [asset: string];
+  useAsReference: [asset: string];
+}>();
 const gallery = computed<LightboxItem[]>(() =>
   props.items?.length ? props.items : [{ asset: props.asset, mime: props.mime }],
 );
@@ -124,6 +131,22 @@ function up(e: PointerEvent) {
         "
       >
         <Download :size="16" />{{ t('下载原图') }}
+      </button>
+      <button
+        v-if="canUseAsReference"
+        type="button"
+        @click="emit('useAsReference', current.asset)"
+      >
+        <ImagePlus :size="16" />{{ t('作为参考图') }}
+      </button>
+      <button
+        v-if="canFavorite"
+        type="button"
+        :class="{ 'is-favorited': isFavorite?.(current.asset) }"
+        :aria-pressed="Boolean(isFavorite?.(current.asset))"
+        @click="emit('toggleFavorite', current.asset)"
+      >
+        <Star :size="16" :class="{ 'star-filled': isFavorite?.(current.asset) }" />{{ t(isFavorite?.(current.asset) ? '已收藏' : '收藏') }}
       </button>
       <span v-if="gallery.length > 1" class="preview-counter">{{ index + 1 }} / {{ gallery.length }}</span>
     </div>

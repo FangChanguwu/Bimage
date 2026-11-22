@@ -30,6 +30,7 @@ export function restoreForm(form: GenerationForm): GenerationForm {
     resolution: form.manualSize ? form.manualSize.resolution : form.resolution,
     autoSize: form.autoSize === true,
     references: [...form.references],
+    mask: typeof form.mask === "string" && form.mask ? form.mask : undefined,
   };
 }
 export function resolveChoice(

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { RefreshCw, ExternalLink, RotateCcw, Copy, Check, X } from "lucide-vue-next";
+import { RefreshCw, Download, ExternalLink, RotateCcw, Copy, Check, X } from "lucide-vue-next";
 import SelectControl from "./SelectControl.vue";
 import { t, locale } from "../i18n";
 import type { Api, ReleaseInfo, RollbackResult, VersionSnapshot } from "../types";
@@ -26,12 +26,16 @@ const closing = ref(false);
 const data = ref<VersionSnapshot | null>(props.snapshot);
 const checking = ref(false);
 const checkError = ref("");
-const rollbackOpen = ref(false);
+const activePanel = ref<"none" | "update" | "rollback">(props.snapshot?.hasUpdate ? "update" : "none");
 const targetTag = ref("");
+const updating = ref(false);
+const updateError = ref("");
+const updateSuccess = ref("");
 const rollingBack = ref(false);
 const rollbackError = ref("");
 const rollbackSuccess = ref("");
-const copiedCmd = ref(false);
+const copiedCmd = ref<"" | "update" | "rollback">("");
+const busy = computed(() => rollingBack.value || updating.value);
 let copyTimer: ReturnType<typeof setTimeout> | undefined;
 let closeTimer: ReturnType<typeof setTimeout> | undefined;
 const currentVersion = computed(() => data.value?.current || props.fallbackVersion);
@@ -59,9 +63,17 @@ const selectedRelease = computed(
   () => releases.value.find((rel) => rel.tag === targetTag.value) ?? null,
 );
 
+const updateCommand = computed(() =>
+  data.value?.git.available
+    ? "git pull --ff-only && npm run build"
+    : "git pull --ff-only && docker compose build && docker compose up -d --force-recreate --wait",
+);
+
 const rollbackCommand = computed(() => {
-  const tag = targetTag.value || "v0.3.2";
-  return `git fetch --tags && git checkout ${tag} && npm run build`;
+  const tag = targetTag.value || "v0.3.4";
+  return data.value?.git.available
+    ? `git fetch --tags && git checkout ${tag} && npm run build`
+    : `git fetch --tags && git checkout ${tag} && docker compose build && docker compose up -d --force-recreate --wait`;
 });
 
 const statusClass = computed(() => {
@@ -122,6 +134,9 @@ async function checkUpdates(force: boolean) {
     );
     data.value = next;
     emit("update", next);
+    if (next.hasUpdate && activePanel.value === "none") {
+      activePanel.value = "update";
+    }
     if (force) {
       emit(
         "notice",
@@ -138,30 +153,66 @@ async function checkUpdates(force: boolean) {
   }
 }
 
-async function toggleRollback() {
-  rollbackOpen.value = !rollbackOpen.value;
+async function togglePanel(panel: "update" | "rollback") {
+  activePanel.value = activePanel.value === panel ? "none" : panel;
+  updateError.value = "";
+  updateSuccess.value = "";
   rollbackError.value = "";
   rollbackSuccess.value = "";
-  if (rollbackOpen.value && !releases.value.length && !checking.value) {
+  if (activePanel.value !== "none" && !releases.value.length && !checking.value) {
     await checkUpdates(false);
   }
 }
 
-async function copyCommand() {
+async function copyCommand(kind: "update" | "rollback") {
   try {
-    await navigator.clipboard.writeText(rollbackCommand.value);
-    copiedCmd.value = true;
+    const text = kind === "update" ? updateCommand.value : rollbackCommand.value;
+    await navigator.clipboard.writeText(text);
+    copiedCmd.value = kind;
     clearTimeout(copyTimer);
     copyTimer = setTimeout(() => {
-      copiedCmd.value = false;
+      copiedCmd.value = "";
     }, 1800);
   } catch {
     emit("notice", t("复制失败"), "warning");
   }
 }
 
+async function refreshLocalSnapshot() {
+  const refreshed = await props.api<VersionSnapshot>("/admin/version", undefined, "GET", props.signal).catch(() => null);
+  if (refreshed) {
+    data.value = {
+      ...refreshed,
+      releases: refreshed.releases.length ? refreshed.releases : (data.value?.releases ?? []),
+    };
+    emit("update", data.value);
+  }
+}
+
+async function executeUpdate() {
+  if (busy.value || !data.value?.hasUpdate || !data.value.latest) return;
+  updating.value = true;
+  updateError.value = "";
+  updateSuccess.value = "";
+  try {
+    const result = await props.api<RollbackResult>(
+      "/admin/version/update",
+      {},
+      "POST",
+      props.signal,
+    );
+    updateSuccess.value = result.message;
+    emit("notice", result.message, "success");
+    await refreshLocalSnapshot();
+  } catch (error) {
+    updateError.value = error instanceof Error ? error.message : t("更新版本失败");
+  } finally {
+    updating.value = false;
+  }
+}
+
 async function executeRollback() {
-  if (!targetTag.value || rollingBack.value) return;
+  if (!targetTag.value || busy.value) return;
   rollingBack.value = true;
   rollbackError.value = "";
   rollbackSuccess.value = "";
@@ -174,11 +225,7 @@ async function executeRollback() {
     );
     rollbackSuccess.value = result.message;
     emit("notice", result.message, "success");
-    const refreshed = await props.api<VersionSnapshot>("/admin/version", undefined, "GET", props.signal).catch(() => null);
-    if (refreshed) {
-      data.value = { ...refreshed, releases: data.value?.releases ?? refreshed.releases };
-      emit("update", data.value);
-    }
+    await refreshLocalSnapshot();
   } catch (error) {
     rollbackError.value = error instanceof Error ? error.message : t("回退版本失败");
   } finally {
@@ -211,14 +258,14 @@ function place() {
 }
 
 function close() {
-  if (closing.value || rollingBack.value) return;
+  if (closing.value || busy.value) return;
   closing.value = true;
   const delay = matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 110;
   closeTimer = setTimeout(() => emit("close"), delay);
 }
 
 function onPointerDownOutside(e: Event) {
-  if (rollingBack.value) return;
+  if (busy.value) return;
   const target = e.target as Node | null;
   if (!target) return;
   if (popoverRef.value?.contains(target)) return;
@@ -228,7 +275,7 @@ function onPointerDownOutside(e: Event) {
 }
 
 function onKeyDown(e: KeyboardEvent) {
-  if (e.key === "Escape" && !rollingBack.value && !document.querySelector(".select-menu")) {
+  if (e.key === "Escape" && !busy.value && !document.querySelector(".select-menu")) {
     e.preventDefault();
     close();
     props.anchor?.focus();
@@ -262,6 +309,9 @@ onMounted(async () => {
     const local = await props.api<VersionSnapshot>("/admin/version", undefined, "GET", props.signal);
     data.value = local;
     emit("update", local);
+    if (local.hasUpdate && activePanel.value === "none") {
+      activePanel.value = "update";
+    }
     if (!local.checkedAt) {
       await checkUpdates(false);
     }
@@ -303,7 +353,7 @@ onMounted(async () => {
             type="button"
             class="icon-button version-close"
             :aria-label="t('关闭弹窗')"
-            :disabled="rollingBack"
+            :disabled="busy"
             @click="close"
           >
             <X :size="14" aria-hidden="true" />
@@ -311,9 +361,23 @@ onMounted(async () => {
         </div>
 
         <div class="version-actions">
-          <button type="button" class="primary" :disabled="checking || rollingBack" @click="checkUpdates(true)">
+          <button
+            type="button"
+            :class="{ primary: !data?.hasUpdate }"
+            :disabled="checking || busy"
+            @click="checkUpdates(true)"
+          >
             <RefreshCw :size="13" :class="{ spinner: checking }" aria-hidden="true" />
             {{ t(checking ? "正在检测…" : "检测更新") }}
+          </button>
+          <button
+            type="button"
+            :class="{ primary: data?.hasUpdate, active: activePanel === 'update' && !data?.hasUpdate }"
+            :disabled="busy"
+            @click="togglePanel('update')"
+          >
+            <Download :size="13" aria-hidden="true" />
+            {{ t("更新版本") }}
           </button>
           <a
             class="version-link-btn"
@@ -326,9 +390,9 @@ onMounted(async () => {
           </a>
           <button
             type="button"
-            :class="{ active: rollbackOpen }"
-            :disabled="rollingBack"
-            @click="toggleRollback"
+            :class="{ active: activePanel === 'rollback' }"
+            :disabled="busy"
+            @click="togglePanel('rollback')"
           >
             <RotateCcw :size="13" aria-hidden="true" />
             {{ t("回退版本") }}
@@ -337,7 +401,64 @@ onMounted(async () => {
 
       <p v-if="checkError" class="error-message version-feedback" role="alert">{{ checkError }}</p>
 
-      <section v-if="rollbackOpen" class="version-panel version-rollback" :aria-label="t('回退版本')">
+      <section v-if="activePanel === 'update'" class="version-panel version-update" :aria-label="t('更新版本')">
+        <div class="version-panel-head">
+          <h3>
+            {{ t("更新到最新版本") }}
+            <span v-if="data?.latest" class="version-date">{{ data.latest.tag }}</span>
+          </h3>
+          <a
+            v-if="data?.latest"
+            class="version-inline-link"
+            :href="data.latest.url"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            {{ t("查看发布") }}
+            <ExternalLink :size="12" aria-hidden="true" />
+          </a>
+        </div>
+
+        <div class="version-cmd-box">
+          <code>{{ updateCommand }}</code>
+          <button
+            type="button"
+            class="icon-button"
+            :aria-label="t('复制命令')"
+            :title="t('复制命令')"
+            @click="copyCommand('update')"
+          >
+            <Check v-if="copiedCmd === 'update'" :size="14" aria-hidden="true" />
+            <Copy v-else :size="14" aria-hidden="true" />
+          </button>
+        </div>
+
+        <p v-if="updateError" class="error-message version-feedback" role="alert">{{ updateError }}</p>
+        <p v-else-if="updateSuccess" class="version-success version-feedback" role="status">{{ updateSuccess }}</p>
+        <p v-else-if="data?.checkedAt && !data?.hasUpdate" class="muted version-hint">{{ t("当前已是最新版本，无需更新。") }}</p>
+        <p v-else-if="!data?.git.available" class="muted version-hint">{{ t("当前非 Git 源码部署环境，请复制上方命令在宿主机更新并重建。") }}</p>
+        <p v-else-if="data?.git.dirty" class="muted version-hint">{{ t("检测到工作区有未提交修改；执行更新前请先提交或暂存本地改动。") }}</p>
+
+        <div v-if="data?.git.available" class="version-rollback-footer">
+          <button
+            type="button"
+            class="primary"
+            :disabled="busy || !data?.hasUpdate || !data?.latest"
+            @click="executeUpdate"
+          >
+            <Download :size="14" :class="{ spinner: updating }" aria-hidden="true" />
+            {{
+              updating
+                ? t("正在更新…")
+                : data?.hasUpdate && data?.latest
+                  ? t("更新到 {tag}", { tag: data.latest.tag })
+                  : t("已是最新版本")
+            }}
+          </button>
+        </div>
+      </section>
+
+      <section v-if="activePanel === 'rollback'" class="version-panel version-rollback" :aria-label="t('回退版本')">
         <div class="version-panel-head">
           <h3>{{ t("回退到历史版本") }}</h3>
           <a
@@ -358,7 +479,7 @@ onMounted(async () => {
             <SelectControl
               v-model="targetTag"
               :options="rollbackOptions"
-              :disabled="rollingBack"
+              :disabled="busy"
               :label="t('目标版本')"
             />
           </label>
@@ -370,9 +491,9 @@ onMounted(async () => {
               class="icon-button"
               :aria-label="t('复制命令')"
               :title="t('复制命令')"
-              @click="copyCommand"
+              @click="copyCommand('rollback')"
             >
-              <Check v-if="copiedCmd" :size="14" aria-hidden="true" />
+              <Check v-if="copiedCmd === 'rollback'" :size="14" aria-hidden="true" />
               <Copy v-else :size="14" aria-hidden="true" />
             </button>
           </div>
@@ -386,7 +507,7 @@ onMounted(async () => {
             <button
               type="button"
               class="delete-confirm"
-              :disabled="rollingBack || !targetTag || selectedRelease?.version === currentVersion"
+              :disabled="busy || !targetTag || selectedRelease?.version === currentVersion"
               @click="executeRollback"
             >
               <RotateCcw :size="14" :class="{ spinner: rollingBack }" aria-hidden="true" />

@@ -4,6 +4,8 @@ import {
   WandSparkles,
   Eraser,
   ImagePlus,
+  Paintbrush,
+  X,
   Plus,
   Minus,
   ArrowRight,
@@ -12,12 +14,14 @@ import {
 import ModelSelect from "./ModelSelect.vue";
 import SelectControl from "./SelectControl.vue";
 import ReferenceImages from "./ReferenceImages.vue";
+import AssetImage from "./AssetImage.vue";
+import RepairEditor from "./RepairEditor.vue";
 import { useReferences } from "../composables/useReferences";
 import { comparePrompts, composePrompt, editPromptReview, PROMPT_LIMIT, reviewText, rewritePrompt, type PromptRun } from "../composables/promptRewrite";
 import { dimensions } from "../domain";
 import { t } from "../i18n";
 import { resolveTextDefaults } from "../composables/textDefaults";
-import type { GenerationForm, Provider, Api, Run, Settings } from "../types";
+import type { GenerationForm, Provider, Api, Run, Settings, RepairResult } from "../types";
 const props = defineProps<{
   form: GenerationForm;
   providers: Provider[];
@@ -37,6 +41,7 @@ const promptInput = ref<HTMLTextAreaElement>();
 const highlight = ref<HTMLElement>();
 const optimizing = ref(false);
 const dragging = ref(false);
+const maskEditing = ref(false);
 let dragDepth = 0;
 const textDefaults = computed(() => resolveTextDefaults(props.providers, props.settings));
 const review = ref<readonly PromptRun[] | null>(null);
@@ -96,7 +101,7 @@ function clear() {
   if (optimizing.value) return;
   setReview(null);
   refs.invalidate();
-  emit("update:form", { ...props.form, prompt: "", references: [] });
+  emit("update:form", { ...props.form, prompt: "", references: [], mask: undefined });
 }
 function manual(key: "ratio" | "resolution", value: string) {
   const next = { ...props.form, [key]: value };
@@ -153,7 +158,35 @@ function promptKeydown(event: KeyboardEvent) {
 function removeReference(id: string) {
   if (optimizing.value) return;
   refs.invalidate();
-  change("references", props.form.references.filter(reference => reference !== id));
+  const wasFirst = props.form.references[0] === id;
+  const nextRefs = props.form.references.filter(reference => reference !== id);
+  const clearMask = !nextRefs.length || wasFirst;
+  emit("update:form", {
+    ...props.form,
+    references: nextRefs,
+    mask: clearMask ? undefined : props.form.mask,
+  });
+}
+function clearMask() {
+  if (optimizing.value) return;
+  emit("update:form", { ...props.form, mask: undefined });
+}
+function applyReferenceMask(result: RepairResult) {
+  if (result.mode === "mask") {
+    emit("update:form", {
+      ...props.form,
+      prompt: result.prompt || props.form.prompt,
+      mask: result.maskId,
+    });
+  } else {
+    const rest = props.form.references.slice(1);
+    emit("update:form", {
+      ...props.form,
+      prompt: result.prompt,
+      references: [result.imageId, ...rest],
+      mask: undefined,
+    });
+  }
 }
 function abortOptimization() {
   request?.abort();
@@ -286,8 +319,19 @@ function generationLabel(count: number) {
         @drop="onDrop"
       >
         <div class="field-heading">
-          <span class="field-label">{{ t('参考图') }}</span
-          ><small>{{ form.references.length }} / 16</small>
+          <span class="field-label">{{ t('参考图') }}</span>
+          <div class="field-heading-right">
+            <button
+              v-if="form.references.length && !form.mask"
+              type="button"
+              class="mask-trigger-btn"
+              :disabled="optimizing || refs.pending.value"
+              @click="maskEditing = true"
+            >
+              <Paintbrush :size="12" aria-hidden="true" />{{ t('绘制蒙版') }}
+            </button>
+            <small>{{ form.references.length }} / 16</small>
+          </div>
         </div>
         <input
           ref="file"
@@ -316,6 +360,30 @@ function generationLabel(count: number) {
           :disabled="optimizing"
           @remove="removeReference"
         />
+        <div v-if="form.mask && form.references.length" class="mask-bar">
+          <div class="mask-bar-thumb mask-checker">
+            <AssetImage :asset="form.mask" :signal="signal" :alt="t('像素蒙版')" />
+          </div>
+          <div class="mask-bar-info">
+            <strong>{{ t('像素蒙版重绘') }}</strong>
+            <small class="muted">{{ t('仅重绘透明蒙版区域') }}</small>
+          </div>
+          <div class="mask-bar-actions">
+            <button type="button" :disabled="optimizing" @click="maskEditing = true">
+              {{ t('重绘蒙版') }}
+            </button>
+            <button
+              type="button"
+              class="icon-button"
+              :aria-label="t('移除蒙版')"
+              :title="t('移除蒙版')"
+              :disabled="optimizing"
+              @click="clearMask"
+            >
+              <X :size="14" />
+            </button>
+          </div>
+        </div>
       </div>
       <div class="output-settings">
         <label class="check auto-check"
@@ -410,5 +478,15 @@ function generationLabel(count: number) {
         >
       </footer>
     </form>
+    <RepairEditor
+      v-if="maskEditing && form.references[0]"
+      :source-asset="form.references[0]"
+      initial-mode="mask"
+      :initial-prompt="form.prompt"
+      :api="api"
+      :signal="signal"
+      @close="maskEditing = false"
+      @apply="applyReferenceMask"
+    />
   </section>
 </template>

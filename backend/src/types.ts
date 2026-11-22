@@ -70,7 +70,18 @@ export interface ImageForm {
   quality: string;
   output_format: string;
   references: string[];
+  mask?: string;
   [key: string]: unknown;
+}
+export interface FavoriteRow {
+  id: string;
+  owner: string;
+  asset: string;
+  jobId: string;
+  taskId: string;
+  form: string;
+  jobCreated: string;
+  createdAt: string;
 }
 export interface Model {
   id: string;

@@ -7,6 +7,8 @@ import {
   Paintbrush,
   LoaderCircle,
   Trash2,
+  Star,
+  ImagePlus,
 } from "lucide-vue-next";
 import AssetImage from "./AssetImage.vue";
 import Modal from "./Modal.vue";
@@ -15,7 +17,7 @@ import RepairEditor from "./RepairEditor.vue";
 import ReferenceImages from "./ReferenceImages.vue";
 import { download, copyImage } from "../composables/assetCache";
 import { statusLabel } from "../domain";
-import type { Job, Task, Api, Run } from "../types";
+import type { Job, Task, Api, Run, RepairResult } from "../types";
 import { t, formatDate } from "../i18n";
 const detailLabels: Record<string, string> = {
   model: '模型', count: '张数', size: '尺寸', autoSize: '自动尺寸',
@@ -29,11 +31,14 @@ const props = defineProps<{
   run: Run;
   cancelling: boolean;
   remove: (id: string) => Promise<void>;
+  favoriteAssets: Set<string>;
 }>();
 const emit = defineEmits<{
   restore: [];
   cancel: [];
-  repair: [id: string, prompt: string];
+  repair: [result: RepairResult];
+  useAsReference: [asset: string];
+  toggleFavorite: [jobId: string, taskId: string, asset: string];
 }>();
 const details = ref(false),
   previewIndex = ref<number | null>(null),
@@ -64,6 +69,10 @@ const galleryItems = computed(() =>
 function openPreview(task: Task) {
   const idx = success.value.findIndex((item) => item.id === task.id);
   if (idx >= 0) previewIndex.value = idx;
+}
+function toggleFavoriteByAsset(assetId: string) {
+  const task = success.value.find((item) => item.asset === assetId);
+  if (task && task.asset) emit("toggleFavorite", props.job.id, task.id, task.asset);
 }
 const canCancel = computed(() => props.job.tasks.some(t => t.status === "queued"));
 const canDelete = computed(() => !["queued", "running"].includes(props.job.status));
@@ -143,7 +152,28 @@ async function deleteJob() {
               <button
                 type="button"
                 class="icon-button"
+                :class="{ 'is-favorited': favoriteAssets.has(task.asset) }"
+                :aria-label="t(favoriteAssets.has(task.asset) ? '取消收藏' : '收藏图片')"
+                :title="t(favoriteAssets.has(task.asset) ? '取消收藏' : '收藏图片')"
+                :aria-pressed="favoriteAssets.has(task.asset)"
+                @click="emit('toggleFavorite', job.id, task.id, task.asset)"
+              >
+                <Star :size="15" :class="{ 'star-filled': favoriteAssets.has(task.asset) }" />
+              </button>
+              <button
+                type="button"
+                class="icon-button"
+                :aria-label="t('作为参考图')"
+                :title="t('作为参考图')"
+                @click="emit('useAsReference', task.asset)"
+              >
+                <ImagePlus :size="15" />
+              </button>
+              <button
+                type="button"
+                class="icon-button"
                 :aria-label="t('下载图片')"
+                :title="t('下载图片')"
                 @click="
                   run(() =>
                     download(
@@ -160,6 +190,7 @@ async function deleteJob() {
                 type="button"
                 class="icon-button"
                 :aria-label="t('复制图片')"
+                :title="t('复制图片')"
                 @click="run(() => copyImage(task.asset!, signal), t('复制成功'))"
               >
                 <Copy :size="15" />
@@ -224,7 +255,7 @@ async function deleteJob() {
         <template v-for="(value, key) in job.form" :key="key"
           ><template
             v-if="
-              !['prompt', 'references', 'providerId', 'manualSize'].includes(
+              !['prompt', 'references', 'mask', 'providerId', 'manualSize'].includes(
                 key,
               )
             "
@@ -247,7 +278,14 @@ async function deleteJob() {
         :references="job.form.references"
         :signal="signal"
         :run="run"
-        readonly /></Modal
+        readonly
+      />
+      <template v-if="job.form.mask">
+        <h3>{{ t('像素蒙版') }}</h3>
+        <div class="detail-mask-preview mask-checker">
+          <AssetImage :asset="job.form.mask" :signal="signal" :alt="t('像素蒙版')" />
+        </div>
+      </template></Modal
     ><Lightbox
       v-if="previewIndex !== null && galleryItems[previewIndex]"
       :asset="galleryItems[previewIndex].asset"
@@ -256,6 +294,11 @@ async function deleteJob() {
       :initial-index="previewIndex"
       :signal="signal"
       :run="run"
+      can-favorite
+      can-use-as-reference
+      :is-favorite="(id) => favoriteAssets.has(id)"
+      @toggle-favorite="toggleFavoriteByAsset"
+      @use-as-reference="(id) => emit('useAsReference', id)"
       @close="previewIndex = null"
     /><RepairEditor
       v-if="repairing"
@@ -263,7 +306,7 @@ async function deleteJob() {
       :api="api"
       :signal="signal"
       @close="repairing = false"
-      @apply="(id, prompt) => emit('repair', id, prompt)"
+      @apply="(result) => emit('repair', result)"
     />
   </article>
 </template>

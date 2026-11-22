@@ -130,6 +130,15 @@ export class Queue {
     )
       throw fail(400, `参考图最多${MAX_REFERENCE_IMAGES}张`);
     for (const id of form.references) this.assets.owned(id, identity.id);
+    if (form.mask === "" || form.mask === null) {
+      delete form.mask;
+    } else if (form.mask !== undefined) {
+      if (typeof form.mask !== "string") throw fail(400, "蒙版参数无效");
+      if (!form.references.length) throw fail(400, "像素蒙版重绘需要至少一张参考图");
+      const maskAsset = this.assets.owned(form.mask, identity.id);
+      if (maskAsset.mime !== "image/png")
+        throw fail(400, "像素蒙版必须为 PNG 图片");
+    }
     return form as ImageForm;
   }
   ownJob(id: string, identity: Owner): JobRow {
@@ -231,6 +240,14 @@ export class Queue {
           id + "." + asset.mime.split("/")[1],
         );
       }
+      if (form.mask) {
+        const maskAsset = this.assets.owned(form.mask, owner);
+        multipart.append(
+          "mask",
+          new Blob([new Uint8Array(maskAsset.bytes)], { type: maskAsset.mime }),
+          maskAsset.id + ".png",
+        );
+      }
       payload = multipart;
     }
     const result = await this.providers.request(provider, endpoint, payload, signal);
@@ -328,8 +345,8 @@ export class Queue {
   private deleteJob(id: string, owner: string): string[] {
     return this.store.transaction(() => {
       // Unlike read access via ownJob(), hard deletion never grants an admin override.
-      const job = this.store.get<Pick<JobRow, "status">>(
-        "SELECT status FROM jobs WHERE id=? AND owner=?",
+      const job = this.store.get<Pick<JobRow, "status" | "form">>(
+        "SELECT status,form FROM jobs WHERE id=? AND owner=?",
         id,
         owner,
       );
@@ -353,26 +370,52 @@ export class Queue {
       this.store.run("DELETE FROM tasks WHERE job=?", id);
       this.store.run("DELETE FROM jobs WHERE id=? AND owner=?", id, owner);
 
-      // Only collect this job's output IDs, and keep any still used by a task,
-      // other job's reference list, or the owner's saved draft.
+      // Collect this job's output IDs and optional mask, keeping any still used by
+      // another task, job reference/mask, saved draft, or favorite snapshot.
       const remove = this.store.db.prepare(`
         DELETE FROM assets AS a WHERE id=? AND owner=?
           AND NOT EXISTS (SELECT 1 FROM tasks WHERE asset=a.id)
+          AND NOT EXISTS (SELECT 1 FROM favorites WHERE asset=a.id AND owner=a.owner)
           AND NOT EXISTS (
             SELECT 1 FROM jobs AS j,
               json_each(CASE WHEN json_valid(j.form) THEN j.form ELSE '{}' END, '$.references') AS ref
             WHERE j.owner=a.owner AND typeof(ref.key)='integer' AND ref.value=a.id
           )
           AND NOT EXISTS (
+            SELECT 1 FROM jobs AS j
+            WHERE j.owner=a.owner AND json_valid(j.form) AND json_extract(j.form, '$.mask')=a.id
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM favorites AS f,
+              json_each(CASE WHEN json_valid(f.form) THEN f.form ELSE '{}' END, '$.references') AS ref
+            WHERE f.owner=a.owner AND typeof(ref.key)='integer' AND ref.value=a.id
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM favorites AS f
+            WHERE f.owner=a.owner AND json_valid(f.form) AND json_extract(f.form, '$.mask')=a.id
+          )
+          AND NOT EXISTS (
             SELECT 1 FROM settings AS s,
               json_each(CASE WHEN json_valid(s.json) THEN s.json ELSE '{}' END, '$.form.references') AS ref
             WHERE s.owner=a.owner AND typeof(ref.key)='integer' AND ref.value=a.id
           )
+          AND NOT EXISTS (
+            SELECT 1 FROM settings AS s
+            WHERE s.owner=a.owner AND json_valid(s.json) AND json_extract(s.json, '$.form.mask')=a.id
+          )
         RETURNING id
       `);
+      const candidates = new Set<string>();
+      for (const task of tasks) if (task.asset) candidates.add(task.asset);
+      try {
+        const parsed = JSON.parse(job.form) as Partial<ImageForm>;
+        if (typeof parsed.mask === "string" && parsed.mask) candidates.add(parsed.mask);
+      } catch {
+        /* Ignore malformed legacy form JSON */
+      }
       const deleted: string[] = [];
-      for (const asset of new Set(tasks.map((task) => task.asset))) {
-        if (asset && remove.get(asset, owner)) deleted.push(asset);
+      for (const asset of candidates) {
+        if (remove.get(asset, owner)) deleted.push(asset);
       }
       return deleted;
     });

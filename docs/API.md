@@ -36,14 +36,17 @@
 - `GET /assets/:id`：认证原件bytes，private/no-store；非owner（且非admin）404。尺寸由实际bytes缓存获取。
 - `GET /assets/:id?variant=thumbnail`：相同授权边界的 WebP 缩略图，最长边480像素、不放大原图；历史图片按需生成。原件不被重新编码。无法解码或像素过大返回422，原件仍可下载。缩略图随原件删除。
 - `HEAD /assets/:id`（可带相同variant）：仅校验图片存在和当前访问权限，不读取原图BLOB或生成缩略图。浏览器持久缓存命中时仍需在线校验，响应不包含图片正文。
-- `POST /jobs`：`{providerId,model,prompt,count,autoSize,size?,ratio?,resolution?,manualSize?,quality,output_format,references}`；count整数1–16，references最多16；旧手动尺寸64–8192，格式宽x高。自动规格省略尺寸字段，manualSize仅用于历史回填，不发送上游。返回完整Job。
+- `POST /jobs`：`{providerId,model,prompt,count,autoSize,size?,ratio?,resolution?,manualSize?,quality,output_format,references,mask?}`；count整数1–16，references最多16；`mask`为可选PNG透明像素蒙版资产ID（存在时要求至少1张参考图且原资产为PNG）；旧手动尺寸64–8192，格式宽x高。自动规格省略尺寸字段，manualSize仅用于历史回填，不发送上游。返回完整Job。
 - `GET /jobs` / `GET /jobs/:id`：租户历史，`{id,owner,form,status,created,startedAt,finishedAt,tasks}`；Task含status/attempts/error/asset及实际width/height/mime。不以请求规格冒充实际尺寸。
 - `GET /jobs?limit=30&q=...&cursor=...`：按账号进行游标分页，limit范围1–100，q按完整提示词进行不区分大小写的字面搜索。返回 `{items,total,nextCursor,token,unchanged:false,active,activeCount,removedIds}`；活动任务计数不受搜索或分页限制。携带上次token且未变化时，返回HTTP200 JSON、`unchanged:true`并省略items/nextCursor。`known`可传最多100个已加载任务ID的JSON数组，removedIds只表示已确认不存在的记录，而不是未落在当前页的记录。不带分页参数的旧客户端仍返回数组。
 - `POST /jobs/:id/cancel {}`：只取消当前 `queued` 的子任务（含等待重试的子任务），不打断 `running`、不删除历史。返回完整 Job 和本次实际取消的 `cancelledCount`；若已无排队项，返回当前 Job 与 `cancelledCount: 0`。若剩余子任务均成功，整批显示已完成，原排队项仍各自显示已取消。
 - `POST /jobs/:id/retry {confirm:true}`：明确收费重试确认；不是任务卡“重试”（后者只恢复表单、不调用生成）。未知成功状态禁止自动重放。
 - `GET /jobs/:id/download`：单原件或真实多图ZIP；归档原件总量128MiB上限，超过建议逐张下载。
+- `GET /favorites`：返回当前账号的收藏列表 `{items}`，每项包含收藏图片资产ID、实际宽高/MIME、收藏时间及创建该图时的完整任务表单快照（含提示词、参数、参考图与像素蒙版）。
+- `POST /favorites {jobId,taskId,asset}`：收藏指定任务中的生成图片，幂等返回完整 `FavoriteItem`；仅允许收藏当前账号自己的任务输出图。
+- `DELETE /favorites/:asset`：取消收藏指定图片并清理不再被任何任务、草稿或收藏引用的孤儿资产；删除历史任务时，被收藏的图片及其参考图/蒙版资产受引用保护不被误删。
 
-每张图独立n=1上游请求。无参考图JSON `/images/generations`；有引用undici multipart `/images/edits`、完整`image[]`。自动模式不发送size。显式429最多3次总尝试，其他错误不自动重试；重启running标interrupted、queued保留。文本视觉引用最大合计16MiB，入站JSON24MiB；数量不意味着任意16大图可通过字节限制。
+每张图独立n=1上游请求。无参考图JSON `/images/generations`；有引用undici multipart `/images/edits`、完整`image[]`（携带 `mask` 时附加 PNG `mask` 字段）。自动模式不发送size。显式429最多3次总尝试，其他错误不自动重试；重启running标interrupted、queued保留。文本视觉引用最大合计16MiB，入站JSON24MiB；数量不意味着任意16大图可通过字节限制。
 
 ## 用户管理（仅管理员）
 
@@ -61,6 +64,7 @@
 
 - `GET /admin/version`：返回当前后端版本、仓库信息、最近缓存的 GitHub Release 检查结果与本机 Git 工作区状态（`available`/`commit`/`branch`/`dirty`）。
 - `POST /admin/version/check {force?:boolean}`：向 GitHub Releases 查询最新版本与历史发布列表（支持 `BIMAGE_GITHUB_REPO` 覆盖仓库，默认 `FangChanguwu/Bimage`），返回语义化版本比较结果。
+- `POST /admin/version/update`：校验存在更新的稳定发布、无运行/排队中生图任务且 Git 工作区清洁（否则返回 409），拉取最新标签并快进或切换工作区至最新版（需重建并重启生效）。
 - `POST /admin/version/rollback {tag}`：校验目标标签合法性与 Git 工作区清洁状态（存在未提交修改返回 409），拉取标签并切换工作区至指定发布版本。
 
 ## 安全与类型

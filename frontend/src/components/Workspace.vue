@@ -11,6 +11,7 @@ import {
   X,
   Search,
   UsersRound,
+  Star,
 } from "lucide-vue-next";
 import Composer from "./Composer.vue";
 import ToastNotice, { type Notice, type NoticeType } from './ToastNotice.vue';
@@ -18,6 +19,7 @@ import JobCard from "./JobCard.vue";
 import QuickPrompt from "./QuickPrompt.vue";
 import SettingsPanel from "./SettingsPanel.vue";
 import UserManagement from "./UserManagement.vue";
+import FavoritesView from "./FavoritesView.vue";
 import LanguageSwitch from './LanguageSwitch.vue';
 import VersionModal from './VersionModal.vue';
 import { version as appVersion } from '../../package.json';
@@ -25,7 +27,7 @@ import { t } from '../i18n';
 import { assetCache } from "../composables/assetCache";
 import { useHistory } from "../composables/useHistory";
 import { resolveTextDefaults } from "../composables/textDefaults";
-import { emptyForm, restoreForm, jobPayload, resolveChoice } from "../domain";
+import { emptyForm, restoreForm, jobPayload, resolveChoice, MAX_REFERENCES } from "../domain";
 import type {
   Site,
   Identity,
@@ -36,6 +38,8 @@ import type {
   Api,
   Run,
   VersionSnapshot,
+  FavoriteItem,
+  RepairResult,
 } from "../types";
 const props = defineProps<{
   site: Site;
@@ -49,8 +53,10 @@ const emit = defineEmits<{
   logout: [];
   site: [site: Site];
 }>();
-const page = ref<"studio" | "users" | "settings">("studio"),
+const page = ref<"studio" | "favorites" | "users" | "settings">("studio"),
   providers = ref<Provider[]>([]),
+  favorites = ref<FavoriteItem[]>([]),
+  favoritesLoading = ref(false),
   cancellingJobs = ref(new Set<string>()),
   historyHeading = ref<HTMLElement>(),
   settings = ref<Settings>({}),
@@ -64,8 +70,9 @@ const page = ref<"studio" | "users" | "settings">("studio"),
   loading = ref(true);
 const isAdmin = computed(() => props.identity.role === "admin");
 const displayVersion = computed(() => (isAdmin.value && versionSnapshot.value?.current) || appVersion);
-const pageTitle = computed(() => t(({ studio: "图像工作台", users: "用户管理", settings: "系统设置" })[page.value]));
-const pageContext = computed(() => t(({ studio: "让想法，成为画面。", users: "管理登录账号与图像请求权限。", settings: "连接服务，整理创作偏好。" })[page.value]));
+const pageTitle = computed(() => t(({ studio: "图像工作台", favorites: "收藏夹", users: "用户管理", settings: "系统设置" })[page.value]));
+const pageContext = computed(() => t(({ studio: "让想法，成为画面。", favorites: "精选画面与完整创作记录。", users: "管理登录账号与图像请求权限。", settings: "连接服务，整理创作偏好。" })[page.value]));
+const favoriteAssets = computed(() => new Set(favorites.value.map((item) => item.asset)));
 const studioReentered = ref(false);
 watch(page, (current, previous) => {
   if (current === 'studio' && previous !== 'studio') studioReentered.value = true;
@@ -87,9 +94,16 @@ const available = computed(() =>
 );
 const history = useHistory(props.api, props.signal, missing => {
   const retained = new Set(form.value.references);
+  if (form.value.mask) retained.add(form.value.mask);
   for (const job of history.jobs.value) {
     for (const id of job.form.references) retained.add(id);
+    if (job.form.mask) retained.add(job.form.mask);
     for (const task of job.tasks) if (task.asset) retained.add(task.asset);
+  }
+  for (const fav of favorites.value) {
+    retained.add(fav.asset);
+    for (const id of fav.form.references || []) retained.add(id);
+    if (fav.form.mask) retained.add(fav.form.mask);
   }
   const cache = assetCache(props.signal);
   for (const job of missing) for (const task of job.tasks)
@@ -164,12 +178,26 @@ function resolveDefaults() {
   form.value = { ...form.value, ...image };
   settings.value = resolveTextDefaults(available.value, settings.value);
 }
+async function loadFavorites() {
+  favoritesLoading.value = true;
+  try {
+    const res = await props.api<{ items: FavoriteItem[] }>("/favorites", undefined, "GET", props.signal);
+    if (active && !props.signal.aborted) {
+      favorites.value = res.items;
+    }
+  } catch {
+    /* Non-fatal: favorites can be retried when opening the Favorites tab */
+  } finally {
+    favoritesLoading.value = false;
+  }
+}
 onMounted(async () => {
   await run(async () => {
     const [p, , s] = await Promise.all([
       props.api<Provider[]>("/providers"),
       refreshHistory(),
       props.api<Settings>("/settings"),
+      loadFavorites(),
     ]);
     if (!active) return;
     providers.value = p;
@@ -231,7 +259,7 @@ async function generate() {
       await props.api<Job>("/jobs", jobPayload(captured));
       props.signal.throwIfAborted();
       if (draftVersion === version)
-        change({ ...form.value, prompt: "", references: [] });
+        change({ ...form.value, prompt: "", references: [], mask: undefined });
       await refresh();
       return true;
     });
@@ -248,10 +276,61 @@ function focusComposer() {
   });
 }
 function restore(job: Job) {
-  change(restoreForm(toRaw(job.form)));
+  restoreFromForm(job.form);
+}
+function restoreFromForm(sourceForm: GenerationForm) {
+  change(restoreForm(toRaw(sourceForm)));
   page.value = "studio";
   focusComposer();
   notify("完整参数和参考图已恢复；点击生成才会提交任务", 'success');
+}
+function addAsReference(assetId: string) {
+  if (form.value.references.includes(assetId)) {
+    if (page.value !== "studio") page.value = "studio";
+    focusComposer();
+    notify("该图片已在参考图列表中", "warning");
+    return;
+  }
+  if (form.value.references.length >= MAX_REFERENCES) {
+    notify("参考图最多16张，请减少后重试", "warning");
+    return;
+  }
+  change({
+    ...form.value,
+    references: [...form.value.references, assetId],
+  });
+  if (page.value !== "studio") page.value = "studio";
+  focusComposer();
+  notify("已添加到参考图", "success", { shape: "pill" });
+}
+async function toggleFavorite(jobId: string, taskId: string, assetId: string) {
+  if (favoriteAssets.value.has(assetId)) {
+    await unfavorite(assetId);
+    return;
+  }
+  const item = await run(() =>
+    props.api<FavoriteItem>("/favorites", { jobId, taskId }, "POST", props.signal),
+  );
+  if (!item || !active || props.signal.aborted) return;
+  if (!favorites.value.some((existing) => existing.asset === item.asset)) {
+    favorites.value = [item, ...favorites.value];
+  }
+  notify("已加入收藏夹", "success", { shape: "pill" });
+}
+async function unfavorite(assetId: string) {
+  const result = await run(() =>
+    props.api<{ ok: boolean; asset: string; deletedAssetIds: string[] }>(
+      "/favorites/" + encodeURIComponent(assetId),
+      undefined,
+      "DELETE",
+      props.signal,
+    ),
+  );
+  if (!result || !active || props.signal.aborted) return;
+  favorites.value = favorites.value.filter((item) => item.asset !== assetId);
+  const cache = assetCache(props.signal);
+  for (const id of result.deletedAssetIds || []) cache.evict(id);
+  notify("已取消收藏", "success", { shape: "pill" });
 }
 async function cancelQueued(id: string) {
   if (cancellingJobs.value.has(id) ||
@@ -285,8 +364,10 @@ async function removeJob(id: string) {
   const cache = assetCache(props.signal);
   const removed = new Set(result.deletedAssetIds);
   for (const asset of removed) cache.evict(asset);
-  if (form.value.references.some(asset => removed.has(asset))) {
-    change({ ...form.value, references: form.value.references.filter(asset => !removed.has(asset)) });
+  const nextRefs = form.value.references.filter(asset => !removed.has(asset));
+  const nextMask = form.value.mask && removed.has(form.value.mask) ? undefined : form.value.mask;
+  if (nextRefs.length !== form.value.references.length || nextMask !== form.value.mask) {
+    change({ ...form.value, references: nextRefs, mask: nextRefs.length ? nextMask : undefined });
   }
   history.remove(id);
   await nextTick();
@@ -295,15 +376,28 @@ async function removeJob(id: string) {
     notify("任务已删除。", "success");
   }
 }
-function repair(job: Job, id: string, prompt: string) {
+function repair(job: Job, result: RepairResult) {
+  if (result.mode === "mask") {
+    change({
+      ...restoreForm(toRaw(job.form)),
+      count: 1,
+      prompt: result.prompt,
+      references: [result.imageId],
+      mask: result.maskId,
+    });
+    focusComposer();
+    notify("像素蒙版重绘已回填；点击生成才会提交任务", "success");
+    return;
+  }
   change({
     ...restoreForm(toRaw(job.form)),
     count: 1,
-    prompt,
-    references: [id],
+    prompt: result.prompt,
+    references: [result.imageId],
+    mask: undefined,
   });
   focusComposer();
-  notify("局部修复已回填；点击生成才会提交任务", 'success');
+  notify("局部修复已回填；点击生成才会提交任务", "success");
 }
 function defaultsSaved(value: Settings) {
   settings.value = value;
@@ -348,12 +442,22 @@ function defaultsSaved(value: Settings) {
       </div>
       <nav :aria-label="t('主导航')">
         <button
+          type="button"
           :aria-label="t('图像工作台')"
           :aria-current="page === 'studio' ? 'page' : undefined"
           :class="{ selected: page === 'studio' }"
           @click="page = 'studio'"
         >
           <WandSparkles :size="18" /><span>{{ t('图像工作台') }}</span>
+        </button>
+        <button
+          type="button"
+          :aria-label="t('收藏夹')"
+          :aria-current="page === 'favorites' ? 'page' : undefined"
+          :class="{ selected: page === 'favorites' }"
+          @click="page = 'favorites'"
+        >
+          <Star :size="18" /><span>{{ t('收藏夹') }}</span>
         </button>
       </nav>
       <div class="sidebar-bottom">
@@ -387,6 +491,17 @@ function defaultsSaved(value: Settings) {
       </header>
       <ToastNotice :notice="translatedNotice" @close="notice = null" @settings="page = 'settings'; notice = null" />
       <UserManagement v-if="page === 'users' && identity.role === 'admin'" :api="api" @created="notify('用户已创建。', 'success')" />
+      <FavoritesView
+        v-else-if="page === 'favorites'"
+        :favorites="favorites"
+        :loading="favoritesLoading || loading"
+        :signal="signal"
+        :run="run"
+        @unfavorite="unfavorite"
+        @use-as-reference="addAsReference"
+        @restore="restoreFromForm"
+        @go-studio="page = 'studio'"
+      />
       <div v-else-if="loading" class="loading-layout" :aria-label="t('载入工作台')">
         <div />
         <div />
@@ -431,9 +546,12 @@ function defaultsSaved(value: Settings) {
             :run="run"
             :cancelling="cancellingJobs.has(job.id)"
             :remove="removeJob"
+            :favorite-assets="favoriteAssets"
             @cancel="cancelQueued(job.id)"
             @restore="restore(job)"
-            @repair="(id, prompt) => repair(job, id, prompt)"
+            @repair="(result) => repair(job, result)"
+            @use-as-reference="addAsReference"
+            @toggle-favorite="toggleFavorite"
           />
           <button v-if="hasMore" type="button" class="history-load-more" :disabled="loadingMore" @click="run(history.loadMore)">{{ t(loadingMore ? '加载中…' : '加载更多') }}</button>
         </section>

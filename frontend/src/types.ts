@@ -34,6 +34,7 @@ export interface GenerationForm {
   quality: string;
   output_format: string;
   references: string[];
+  mask?: string;
   aspect_ratio?: string;
   manualSize?: { size: string; ratio: string; resolution?: string };
 }
@@ -86,6 +87,18 @@ export interface Job {
   startedAt?: string;
   finishedAt?: string;
 }
+export interface FavoriteItem {
+  id: string;
+  asset: string;
+  mime?: string;
+  width?: number | null;
+  height?: number | null;
+  jobId: string;
+  taskId: string;
+  form: GenerationForm;
+  jobCreated: string;
+  createdAt: string;
+}
 export type Api = <T = unknown>(
   path: string,
   body?: unknown,
@@ -101,6 +114,14 @@ export interface Point {
   y: number;
 }
 export type Tool = "pen" | "rect" | "ellipse" | "arrow";
+export type RepairMode = "mask" | "annotation";
+export type MaskTool = "brush" | "eraser" | "rect" | "ellipse";
+export interface RepairResult {
+  mode: RepairMode;
+  imageId: string;
+  maskId?: string;
+  prompt: string;
+}
 export interface Shape {
   tool: Tool;
   color: string;

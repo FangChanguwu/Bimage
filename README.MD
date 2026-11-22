@@ -10,7 +10,7 @@
 
 **English** · [简体中文](README_CN.MD)
 
-![Version](https://img.shields.io/badge/version-0.3.5-blue)
+![Version](https://img.shields.io/badge/version-0.3.6-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 </div>
@@ -21,12 +21,12 @@ Connect your own OpenAI-compatible provider to generate images, edit with refere
 
 ## Features
 
-- **Generate & edit** — Text-to-image and reference editing (up to 16 images), auto or custom dimensions, PNG / JPEG / WebP export.
+- **Generate & edit** — Text-to-image, reference editing (up to 16 images), one-click "Use as reference", pixel mask inpainting (`/images/edits` `mask`), auto or custom dimensions, and PNG / JPEG / WebP export.
 - **Prompt optimization** — Draft prompts from short briefs or review inline word-level diffs before applying.
 - **Persistent queue** — Submits one request per image and saves progress; cancel queued items without interrupting running ones.
-- **History & export** — Full-history prompt search, paginated loading, one-click settings restore, original and batch ZIP downloads.
+- **History & Favorites** — Full-history prompt search, paginated loading, image Favorites gallery in sidebar (with full prompt, settings, references, and mask detail view), one-click settings restore, and original / batch ZIP downloads.
 - **Fast loading** — Server-generated thumbnails with account-scoped browser cache (clearable in Settings; wiped on logout).
-- **Multi-user & admin** — Account login, shared providers, custom branding, per-user concurrency limits, and admin-only GitHub update checks / version rollback.
+- **Multi-user & admin** — Account login, shared providers, custom branding, per-user concurrency limits, and admin-only GitHub update checks, one-click update to latest release, and version rollback.
 - **Bilingual UI** — Instant English / Simplified Chinese switching with draft preservation.
 
 ![Prompt optimization diff view](docs/prompt-refinement-en.png)
