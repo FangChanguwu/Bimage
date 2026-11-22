@@ -11,6 +11,7 @@ import { Providers } from "./providers.js";
 import { Assets } from "./assets.js";
 import { mountRewrite } from "./rewrite.js";
 import { Queue } from "./queue.js";
+import { mountVersion } from "./version.js";
 import { clientRateLimitKey } from "./client-rate-limit.js";
 import type { ProviderNetwork } from "./network.js";
 export { validateUrl } from "./network.js";
@@ -60,6 +61,7 @@ export async function createApp(
   mountPublicSettings(app, store);
   mountAuthentication(app, store, installer, keyGenerator);
   mountSettings(app, store);
+  mountVersion(app, store, keyGenerator);
   const providers = new Providers(store, options.providerNetwork);
   const assets = new Assets(store);
   const queue = new Queue(

@@ -1,14 +1,15 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { computed, ref } from "vue";
 import { X, Copy } from "lucide-vue-next";
 import AssetImage from "./AssetImage.vue";
 import Lightbox from "./Lightbox.vue";
 import { copyImage } from "../composables/assetCache";
 import { t } from "../i18n";
 import type { Run } from "../types";
-defineProps<{ references: string[]; signal: AbortSignal; run: Run; disabled?: boolean }>();
+const props = defineProps<{ references: string[]; signal: AbortSignal; run: Run; disabled?: boolean; readonly?: boolean }>();
 const emit = defineEmits<{ remove: [id: string] }>();
-const preview = ref("");
+const previewIndex = ref<number | null>(null);
+const galleryItems = computed(() => props.references.map((asset) => ({ asset })));
 </script>
 <template>
   <div v-if="references.length" class="references">
@@ -18,7 +19,7 @@ const preview = ref("");
         class="reference-open"
         :aria-label="t('查看参考图')"
         :disabled="disabled"
-        @click="preview = id"
+        @click="previewIndex = i"
       >
         <AssetImage
           :asset="id"
@@ -34,6 +35,7 @@ const preview = ref("");
       >
         <Copy :size="14" /></button
       ><button
+        v-if="!readonly"
         type="button"
         class="reference-remove icon-button"
         :aria-label="t('移除参考图')"
@@ -45,10 +47,12 @@ const preview = ref("");
     </div>
   </div>
   <Lightbox
-    v-if="preview"
-    :asset="preview"
+    v-if="previewIndex !== null && galleryItems[previewIndex]"
+    :asset="galleryItems[previewIndex].asset"
+    :items="galleryItems"
+    :initial-index="previewIndex"
     :signal="signal"
     :run="run"
-    @close="preview = ''"
+    @close="previewIndex = null"
   />
 </template>

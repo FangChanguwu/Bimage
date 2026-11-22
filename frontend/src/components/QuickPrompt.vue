@@ -22,7 +22,9 @@ const intent = ref(props.form.prompt),
   references = ref([...props.form.references]),
   result = ref(""),
   busy = ref(false),
+  dragging = ref(false),
   file = ref<HTMLInputElement>();
+let dragDepth = 0;
 const controller = new AbortController();
 const signal = AbortSignal.any([props.signal, controller.signal]);
 onBeforeUnmount(() => controller.abort());
@@ -43,6 +45,29 @@ function selectFiles(event: Event) {
   input.value = "";
   if (!busy.value && !refs.pending.value && files.length)
     void props.run(() => refs.upload(files));
+}
+function onDragEnter(e: DragEvent) {
+  if (busy.value || refs.pending.value || !e.dataTransfer?.types.includes("Files")) return;
+  dragDepth++;
+  dragging.value = true;
+}
+function onDragOver(e: DragEvent) {
+  if (busy.value || refs.pending.value) return;
+  if (e.dataTransfer?.types.includes("Files")) { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; }
+}
+function onDragLeave() {
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (dragDepth === 0) dragging.value = false;
+}
+function onDrop(e: DragEvent) {
+  e.preventDefault();
+  dragDepth = 0;
+  dragging.value = false;
+  const files = Array.from(e.dataTransfer?.files || []).filter(f => f.type.startsWith("image/"));
+  if (!busy.value && !refs.pending.value && files.length) void props.run(() => refs.upload(files));
+}
+function intentKeydown(e: KeyboardEvent) {
+  if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); void generate(); }
 }
 function paste(event: ClipboardEvent) {
   if (!busy.value && !refs.pending.value) void props.run(() => refs.paste(event));
@@ -81,6 +106,7 @@ async function generate() {
         rows="4"
         :disabled="busy"
         :placeholder="t('例如：雨夜街头的一只猫，电影感光影')"
+        @keydown="intentKeydown"
         @paste="paste"
       /></label
     ><input
@@ -94,9 +120,15 @@ async function generate() {
       :disabled="busy || refs.pending.value"
       @change="selectFiles"
     /><button
+      type="button"
       class="upload-zone"
+      :class="{ dragging }"
       :disabled="busy || refs.pending.value"
       @click="file?.click()"
+      @dragenter="onDragEnter"
+      @dragover="onDragOver"
+      @dragleave="onDragLeave"
+      @drop="onDrop"
     >
       <ImagePlus :size="18" />{{ t('添加参考图 · 或粘贴图片') }}</button
     ><ReferenceImages

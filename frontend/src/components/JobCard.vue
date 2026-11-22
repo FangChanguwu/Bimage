@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, onMounted, onBeforeUnmount } from "vue";
+import { computed, ref, watch, onBeforeUnmount } from "vue";
 import {
   Download,
   Copy,
@@ -16,7 +16,7 @@ import ReferenceImages from "./ReferenceImages.vue";
 import { download, copyImage } from "../composables/assetCache";
 import { statusLabel } from "../domain";
 import type { Job, Task, Api, Run } from "../types";
-import { t, locale, formatDate } from "../i18n";
+import { t, formatDate } from "../i18n";
 const detailLabels: Record<string, string> = {
   model: '模型', count: '张数', size: '尺寸', autoSize: '自动尺寸',
   resolution: '分辨率', ratio: '比例', quality: '质量',
@@ -36,15 +36,35 @@ const emit = defineEmits<{
   repair: [id: string, prompt: string];
 }>();
 const details = ref(false),
-  preview = ref<Task | null>(null),
+  previewIndex = ref<number | null>(null),
   repairing = ref(false),
   confirmingDelete = ref(false),
   deleting = ref(false),
   now = ref(Date.now());
-let timer: ReturnType<typeof setInterval>;
-onMounted(() => (timer = setInterval(() => (now.value = Date.now()), 100)));
-onBeforeUnmount(() => clearInterval(timer));
+let timer: ReturnType<typeof setInterval> | undefined;
+function stopTimer() {
+  if (timer !== undefined) { clearInterval(timer); timer = undefined; }
+}
+watch(
+  () => Boolean(props.job.startedAt && !props.job.finishedAt),
+  (active) => {
+    stopTimer();
+    if (active) {
+      now.value = Date.now();
+      timer = setInterval(() => (now.value = Date.now()), 200);
+    }
+  },
+  { immediate: true },
+);
+onBeforeUnmount(stopTimer);
 const success = computed(() => props.job.tasks.filter((t) => t.asset));
+const galleryItems = computed(() =>
+  success.value.map((task) => ({ asset: task.asset!, mime: task.mime })),
+);
+function openPreview(task: Task) {
+  const idx = success.value.findIndex((item) => item.id === task.id);
+  if (idx >= 0) previewIndex.value = idx;
+}
 const canCancel = computed(() => props.job.tasks.some(t => t.status === "queued"));
 const canDelete = computed(() => !["queued", "running"].includes(props.job.status));
 const duration = computed(() =>
@@ -74,8 +94,8 @@ async function deleteJob() {
         ><LoaderCircle
           v-if="job.status === 'running'"
           class="spinner"
-          :size="14"
-        />{{ t(statusLabel[job.status] || job.status)
+          :size="13"
+        /><span v-else class="status-dot" aria-hidden="true" />{{ t(statusLabel[job.status] || job.status)
         }}<small v-if="duration"> · {{ t('用时 {duration}秒', { duration }) }}</small></span
       ><time :datetime="job.created">{{
         formatDate(job.created)
@@ -105,7 +125,7 @@ async function deleteJob() {
                   : undefined,
             }"
             :aria-label="t('查看图片')"
-            @click="preview = task"
+            @click="openPreview(task)"
           >
             <AssetImage
               :asset="task.asset"
@@ -208,7 +228,7 @@ async function deleteJob() {
                 key,
               )
             "
-            ><dt>{{ locale === 'en' ? t(detailLabels[key] || key) : key }}</dt>
+            ><dt>{{ t(detailLabels[key] || key) }}</dt>
             <dd>{{ value }}</dd></template
           ></template
         >
@@ -227,14 +247,16 @@ async function deleteJob() {
         :references="job.form.references"
         :signal="signal"
         :run="run"
-        @remove="() => {}" /></Modal
+        readonly /></Modal
     ><Lightbox
-      v-if="preview?.asset"
-      :asset="preview.asset"
-      :mime="preview.mime"
+      v-if="previewIndex !== null && galleryItems[previewIndex]"
+      :asset="galleryItems[previewIndex].asset"
+      :mime="galleryItems[previewIndex].mime"
+      :items="galleryItems"
+      :initial-index="previewIndex"
       :signal="signal"
       :run="run"
-      @close="preview = null"
+      @close="previewIndex = null"
     /><RepairEditor
       v-if="repairing"
       :job="job"

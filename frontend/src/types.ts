@@ -111,3 +111,35 @@ export interface Choice {
   providerId: string;
   model: string;
 }
+export interface ReleaseInfo {
+  tag: string;
+  version: string;
+  name: string;
+  url: string;
+  publishedAt: string;
+  body: string;
+  prerelease: boolean;
+}
+export interface GitInfo {
+  available: boolean;
+  commit?: string;
+  branch?: string;
+  dirty?: boolean;
+}
+export interface VersionSnapshot {
+  current: string;
+  repo: string;
+  releasesUrl: string;
+  checkedAt: string | null;
+  latest: ReleaseInfo | null;
+  hasUpdate: boolean;
+  releases: ReleaseInfo[];
+  git: GitInfo;
+}
+export interface RollbackResult {
+  ok: boolean;
+  tag: string;
+  commit?: string;
+  restartRequired?: boolean;
+  message: string;
+}

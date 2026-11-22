@@ -1,4 +1,4 @@
-import { activatePersistentOwner, clearPersistentAssets, persistentAssetUsage, persistentEpoch, readPersistentAsset, writePersistentAsset, type AssetVariant } from "./persistentAssets.ts";
+import { activatePersistentOwner, clearPersistentAssets, persistentAssetUsage, readPersistentAssetWithEpoch, writePersistentAsset, type AssetVariant } from "./persistentAssets.ts";
 export interface CacheOptions { owner: string; verify: () => Promise<void> }
 interface Entry {
   signal: AbortSignal;
@@ -136,8 +136,9 @@ function createCache(signal: AbortSignal, unauthorized?: () => void, options?: C
         const requestSignal = AbortSignal.any([signal, current.controller.signal]);
         if (options) await clearing;
         requestSignal.throwIfAborted();
-        const epoch = options ? await persistentEpoch(options.owner) : undefined;
-        const stored = options && epoch !== undefined ? await readPersistentAsset(options.owner, id, variant, epoch) : undefined;
+        const { epoch, blob: stored } = options
+          ? await readPersistentAssetWithEpoch(options.owner, id, variant)
+          : { epoch: undefined, blob: undefined };
         requestSignal.throwIfAborted();
         const url = "/api/assets/" + encodeURIComponent(id) + (variant === "thumbnail" ? "?variant=thumbnail" : "");
         const response = await fetch(url, {
@@ -183,6 +184,12 @@ function createCache(signal: AbortSignal, unauthorized?: () => void, options?: C
     if (record) record.refs = Math.max(0, record.refs - 1);
     trim();
   }
+  function peek(id: string, variant: AssetVariant = "thumbnail"): string | undefined {
+    if (signal.aborted) return undefined;
+    const record = entries.get(cacheKey(id, variant));
+    if (!record?.entry || record.entry.signal.aborted) return undefined;
+    return record.entry.url;
+  }
   async function thumbnail(entry: Entry) {
     entry.signal.throwIfAborted();
     if (entry.thumb) return entry.thumb;
@@ -220,7 +227,7 @@ function createCache(signal: AbortSignal, unauthorized?: () => void, options?: C
     },
     { once: true },
   );
-  return { get, acquire, release, thumbnail, trim, evict, clear, usage };
+  return { get, acquire, release, peek, thumbnail, trim, evict, clear, usage };
 }
 export async function download(url: string, name: string, signal: AbortSignal) {
   signal.throwIfAborted();

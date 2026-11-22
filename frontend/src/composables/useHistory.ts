@@ -13,9 +13,9 @@ interface HistoryPage {
 /** A tenant-lifetime, serialized history stream. A missing page is never a deletion. */
 export function useHistory(api: Api, signal: AbortSignal, removed?: (jobs: Job[]) => void) {
   const jobs = ref<Job[]>([]), query = ref(''), total = ref(0), hasActive = ref(false);
-  const nextCursor = ref<string | null>(null), loadingMore = ref(false);
+  const nextCursor = ref<string | null>(null), loadingMore = ref(false), searching = ref(false);
   const pending = new Set<string>(), deleted = new Set<string>();
-  let alive = true, revision = 0, token = '', cursors: string[] = [], knownOffset = 0;
+  let alive = true, revision = 0, token = '', cursors: string[] = [], knownOffset = 0, replaceOnRefresh = false;
   let chain = Promise.resolve(), timer: ReturnType<typeof setTimeout> | undefined;
   let searchTimer: ReturnType<typeof setTimeout> | undefined, polling = false, started = false;
   const valid = (v: number) => alive && !signal.aborted && revision === v;
@@ -52,10 +52,15 @@ export function useHistory(api: Api, signal: AbortSignal, removed?: (jobs: Job[]
     if (!valid(v)) return;
     total.value = first.total; hasActive.value = first.active;
     forget(first.removedIds ?? []);
-    if (first.unchanged) return;
+    if (first.unchanged) { searching.value = false; return; }
     const refreshed = new Set(first.items?.map(job => job.id));
-    merge(first.items ?? []);
-    // Refresh the windows already loaded, without dropping records displaced by new jobs.
+    if (replaceOnRefresh) {
+      replaceOnRefresh = false;
+      jobs.value = sorted((first.items ?? []).filter(job => !deleted.has(job.id) && !pending.has(job.id)));
+    } else {
+      merge(first.items ?? []);
+    }
+    searching.value = false;
     const refreshedCursors: string[] = [];
     let cursor = first.nextCursor ?? null;
     for (let index = 0; index < cursors.length && cursor; index++) {
@@ -114,10 +119,13 @@ export function useHistory(api: Api, signal: AbortSignal, removed?: (jobs: Job[]
   }
   watch(query, () => {
     if (!alive || signal.aborted) return;
-    revision++; token = ''; cursors = []; knownOffset = 0;
-    jobs.value = []; total.value = 0; nextCursor.value = null;
+    revision++; token = ''; cursors = []; knownOffset = 0; replaceOnRefresh = true;
+    nextCursor.value = null; searching.value = true;
     clearTimeout(searchTimer); clearTimeout(timer);
-    searchTimer = setTimeout(() => { void refresh().catch(() => {}); }, 250);
+    searchTimer = setTimeout(() => {
+      const v = revision;
+      void refresh().catch(() => { if (valid(v)) searching.value = false; });
+    }, 220);
   }, { flush: 'sync' });
   function beginMutation(id: string) { pending.add(id); revision++; token = ''; }
   function endMutation(id: string, job?: Job) {
@@ -134,10 +142,10 @@ export function useHistory(api: Api, signal: AbortSignal, removed?: (jobs: Job[]
     alive = false; clearTimeout(timer); clearTimeout(searchTimer);
     window.removeEventListener('focus', foreground); window.removeEventListener('online', foreground);
     document.removeEventListener('visibilitychange', foreground);
-    jobs.value = []; query.value = ''; total.value = 0;
+    jobs.value = []; query.value = ''; total.value = 0; searching.value = false;
   }
   signal.addEventListener('abort', stop, { once: true });
   onScopeDispose(() => { signal.removeEventListener('abort', stop); stop(); });
-  return { jobs, query, total, hasActive, nextCursor, loadingMore,
+  return { jobs, query, total, hasActive, nextCursor, loadingMore, searching,
     hasMore: computed(() => nextCursor.value !== null), refresh, loadMore, start, beginMutation, endMutation, remove };
 }

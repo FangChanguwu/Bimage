@@ -8,6 +8,8 @@ export const imageMessages: Record<string, string> = {
   '下载原图': 'Download original',
   '预览原图': 'Original image preview',
   '滚轮或双指缩放 · 拖动查看 · Esc 关闭': 'Scroll or pinch to zoom · Drag to pan · Esc to close',
+  '上一张': 'Previous image',
+  '下一张': 'Next image',
   '关闭弹窗': 'Close dialog',
   '排队中': 'Queued',
   '生成中': 'Generating',

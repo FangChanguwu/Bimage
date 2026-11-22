@@ -8,21 +8,27 @@ const props = defineProps<{
   alt: string;
   original?: boolean;
 }>();
+const emit = defineEmits<{ state: [status: "loading" | "ready" | "error"] }>();
 const image = ref<HTMLImageElement>(),
   src = ref(""),
-  error = ref(false);
+  error = ref(false),
+  loaded = ref(false);
 let observer: IntersectionObserver | undefined,
   held = "";
 let heldCache: ReturnType<typeof assetCache> | undefined;
 let heldVariant: "original" | "thumbnail" = "thumbnail";
 let generation = 0;
 let unlisten: (() => void) | undefined;
+function updateState() {
+  emit("state", error.value ? "error" : loaded.value ? "ready" : "loading");
+}
 function release() {
   unlisten?.();
   unlisten = undefined;
   if (held) heldCache?.release(held, heldVariant);
   held = "";
   src.value = "";
+  loaded.value = false;
   generation++;
 }
 async function load() {
@@ -30,6 +36,9 @@ async function load() {
   const version = ++generation,
     id = props.asset;
   held = id;
+  error.value = false;
+  loaded.value = false;
+  updateState();
   try {
     const cache = assetCache(props.signal);
     heldCache = cache;
@@ -42,15 +51,27 @@ async function load() {
       // component unmounts or its asset/session is explicitly invalidated.
       observer?.disconnect();
       const invalidated = () => {
-        if (version === generation) { src.value = ""; error.value = true; }
+        if (version === generation) { src.value = ""; loaded.value = false; error.value = true; updateState(); }
       };
       entry.signal.addEventListener("abort", invalidated, { once: true });
       unlisten = () => entry.signal.removeEventListener("abort", invalidated);
     }
   } catch {
-    if (version === generation) error.value = true;
+    if (version === generation) { error.value = true; loaded.value = false; updateState(); }
   }
 }
+function onLoad() {
+  if (src.value) { loaded.value = true; error.value = false; updateState(); }
+}
+function onError() {
+  if (src.value) { loaded.value = false; error.value = true; updateState(); }
+}
+function retry() {
+  release();
+  error.value = false;
+  void load();
+}
+defineExpose({ retry });
 onMounted(() => {
   // Dialog children mount before showModal(). An original with no intrinsic
   // size must not wait for its own IntersectionObserver to start loading.
@@ -81,6 +102,9 @@ onBeforeUnmount(() => {
     ref="image"
     :src="src || undefined"
     :alt="error ? t('图片加载失败，请重新打开') : alt"
+    :data-state="error ? 'error' : loaded ? 'ready' : 'loading'"
     draggable="false"
+    @load="onLoad"
+    @error="onError"
   />
 </template>

@@ -22,6 +22,7 @@ const emit = defineEmits<{
   refresh: [];
   settings: [settings: Settings];
   site: [site: Site];
+  cleared: [];
 }>();
 const tab = ref("providers"),
   adding = ref(false),
@@ -159,7 +160,7 @@ async function remove() {
     </section>
   </div>
   <section v-if="tab === 'cache'" class="panel settings-section">
-    <ImageCacheSettings :signal="signal" />
+    <ImageCacheSettings :signal="signal" @cleared="emit('cleared')" />
   </section>
   <SiteSettings
     v-if="tab === 'site' && identity.role === 'admin'"

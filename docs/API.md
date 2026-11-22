@@ -57,6 +57,12 @@
 
 旧成员工作区的数据保留但不会分配给新账号；不提供认领入口。旧数据的启动迁移保护和禁止重试无有效账号所有者任务的检查仍然生效。
 
+## 版本与更新
+
+- `GET /version`：返回当前后端版本、仓库信息、最近缓存的 GitHub Release 检查结果与本机 Git 工作区状态（`available`/`commit`/`branch`/`dirty`）。
+- `POST /version/check {force?:boolean}`：向 GitHub Releases 查询最新版本与历史发布列表（支持 `BIMAGE_GITHUB_REPO` 覆盖仓库，默认 `FangChanguwu/Bimage`），返回语义化版本比较结果。
+- `POST /version/rollback {tag}`（仅管理员）：校验目标标签合法性与 Git 工作区清洁状态（存在未提交修改返回 409），拉取标签并切换工作区至指定发布版本。
+
 ## 安全与类型
 
 `backend/contracts/api.ts` 为前端DTO/交互类型，`backend/contracts/limits.js` 与声明为共享16图常量；后端独立运行时验证（不依赖前端校验）。供应商请求和结果下载均校验并固定 DNS 解析结果，不接受重定向、URL 凭据、私网及本机地址，管理员也不能例外。共享使用者不能覆写服务端固定配置。API约180次/分/IP，登录20次/15分，模型发现与提示词优化各20次/分。仅在配置了受信任的 Web 代理时使用该代理重写的客户端地址；其他连接按直连地址限流。

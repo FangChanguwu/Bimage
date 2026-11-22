@@ -11,6 +11,7 @@ interface Lifetime {
   csrf: string;
   identity: Identity | null;
   checking?: Promise<void>;
+  nextCheck?: Promise<void>;
 }
 export function useSession() {
   const identity = ref<Identity | null>(null),
@@ -67,14 +68,7 @@ export function useSession() {
     if (data === null) throw Error("服务器响应无效，请重试");
     return data as T;
   }
-  async function verify(bound: Lifetime, afterResponse = false) {
-    bound.controller.signal.throwIfAborted();
-    if (!bound.identity) throw Error("请重新登录");
-    // A check already in flight might have authenticated the cookie before this
-    // data response. Wait for it, then start a fresh check for the new result.
-    if (afterResponse && bound.checking) await bound.checking;
-    bound.controller.signal.throwIfAborted();
-    // Only concurrent checks share a promise; no cached identity can authorize a later poll/write.
+  function runCheck(bound: Lifetime): Promise<void> {
     if (!bound.checking) {
       bound.checking = (async () => {
         const current = await request<Identity>(bound, "/me");
@@ -85,7 +79,31 @@ export function useSession() {
         }
       })().finally(() => { bound.checking = undefined; });
     }
-    await bound.checking;
+    return bound.checking;
+  }
+  async function verify(bound: Lifetime, afterResponse = false) {
+    bound.controller.signal.throwIfAborted();
+    if (!bound.identity) throw Error("请重新登录");
+    // A check already in flight might have authenticated the cookie before this
+    // data response. Batch all concurrent post-response callers into one fresh
+    // follow-up check that starts strictly after the in-flight check settles.
+    if (afterResponse && bound.checking) {
+      if (!bound.nextCheck) {
+        const prior = bound.checking;
+        bound.nextCheck = (async () => {
+          try {
+            await prior;
+          } finally {
+            bound.nextCheck = undefined;
+          }
+          bound.controller.signal.throwIfAborted();
+          await runCheck(bound);
+        })();
+      }
+      await bound.nextCheck;
+    } else {
+      await runCheck(bound);
+    }
     bound.controller.signal.throwIfAborted();
   }
   function bindApi(bound: Lifetime): Api {

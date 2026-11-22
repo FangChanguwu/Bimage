@@ -36,6 +36,8 @@ const file = ref<HTMLInputElement>();
 const promptInput = ref<HTMLTextAreaElement>();
 const highlight = ref<HTMLElement>();
 const optimizing = ref(false);
+const dragging = ref(false);
+let dragDepth = 0;
 const textDefaults = computed(() => resolveTextDefaults(props.providers, props.settings));
 const review = ref<readonly PromptRun[] | null>(null);
 const reviewValue = computed(() => review.value ? reviewText(review.value) : "");
@@ -102,6 +104,11 @@ function manual(key: "ratio" | "resolution", value: string) {
   next.size = dimensions(next.ratio, next.resolution || "1K");
   emit("update:form", next);
 }
+function uploadFiles(files: File[]) {
+  const images = files.filter(f => f.type.startsWith("image/"));
+  if (!optimizing.value && !refs.pending.value && images.length)
+    void props.run(() => refs.upload(images));
+}
 function upload(e: Event) {
   const target = e.target as HTMLInputElement;
   const files = Array.from(target.files || []);
@@ -109,9 +116,39 @@ function upload(e: Event) {
   if (!optimizing.value && !refs.pending.value && files.length)
     void props.run(() => refs.upload(files));
 }
+function onDragEnter(e: DragEvent) {
+  if (optimizing.value || refs.pending.value) return;
+  if (!e.dataTransfer?.types.includes("Files")) return;
+  dragDepth++;
+  dragging.value = true;
+}
+function onDragOver(e: DragEvent) {
+  if (optimizing.value || refs.pending.value) return;
+  if (e.dataTransfer?.types.includes("Files")) {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+  }
+}
+function onDragLeave() {
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (dragDepth === 0) dragging.value = false;
+}
+function onDrop(e: DragEvent) {
+  e.preventDefault();
+  dragDepth = 0;
+  dragging.value = false;
+  const files = Array.from(e.dataTransfer?.files || []);
+  uploadFiles(files);
+}
 function paste(event: ClipboardEvent) {
   if (optimizing.value) event.preventDefault();
   else if (!refs.pending.value) void props.run(() => refs.paste(event));
+}
+function promptKeydown(event: KeyboardEvent) {
+  if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+    event.preventDefault();
+    submit();
+  }
 }
 function removeReference(id: string) {
   if (optimizing.value) return;
@@ -193,7 +230,7 @@ function generationLabel(count: number) {
         </button>
       </div>
     </div>
-    <form class="panel" @submit.prevent="submit">
+    <form class="panel" @submit.prevent="submit" @paste="paste">
       <div class="prompt-field">
         <label class="prompt-label" for="composer-prompt">{{ t('提示词') }}</label>
         <div class="prompt-box" :class="{ 'prompt-locked': optimizing, 'prompt-review': review }">
@@ -212,8 +249,8 @@ function generationLabel(count: number) {
             :placeholder="t('描述你想看见的画面，主体、光线与细节…')"
             @beforeinput="rememberRange"
             @input="editPrompt"
+            @keydown="promptKeydown"
             @scroll="syncHighlight"
-            @paste="paste"
           />
           <div v-if="review || optimizing || form.prompt.trim()" class="prompt-tools">
             <template v-if="review">
@@ -240,7 +277,14 @@ function generationLabel(count: number) {
             (p, m) => emit('update:form', { ...form, providerId: p, model: m })
           "
       /></label>
-      <div class="reference-field" :class="{ 'reference-locked': optimizing }">
+      <div
+        class="reference-field"
+        :class="{ 'reference-locked': optimizing }"
+        @dragenter="onDragEnter"
+        @dragover="onDragOver"
+        @dragleave="onDragLeave"
+        @drop="onDrop"
+      >
         <div class="field-heading">
           <span class="field-label">{{ t('参考图') }}</span
           ><small>{{ form.references.length }} / 16</small>
@@ -258,6 +302,7 @@ function generationLabel(count: number) {
         /><button
           type="button"
           class="upload-zone"
+          :class="{ dragging }"
           :disabled="optimizing || refs.pending.value"
           @click="file?.click()"
         >
@@ -305,7 +350,7 @@ function generationLabel(count: number) {
         <small v-if="!form.autoSize" class="dimensions"
           >{{ t('{size} · 实际输出以模型返回为准', { size: form.size }) }}</small
         >
-        <div class="field-grid">
+        <div class="field-grid field-grid-3">
           <label
             >{{ t('张数') }}
             <div class="stepper">
