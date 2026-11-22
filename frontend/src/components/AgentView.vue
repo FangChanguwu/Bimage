@@ -558,8 +558,14 @@ async function sendMessage(overrideText?: string) {
   }
 }
 
+function canApprovePlan(card: AgentPlanCard): boolean {
+  const items = getPlanItems(card);
+  return items.length > 0 && items.every((item) => item.prompt.trim().length > 0);
+}
+
 async function handleApprove(card: AgentPlanCard, approved: boolean) {
   if (!currentSessionId.value || approving.value) return;
+  if (approved && !canApprovePlan(card)) return;
   const editedItems = planDrafts.value[card.id] ?? card.items;
   approving.value = true;
   try {
@@ -1307,7 +1313,7 @@ onBeforeUnmount(() => {
                       <button
                         type="button"
                         class="primary"
-                        :disabled="approving"
+                        :disabled="approving || !canApprovePlan(card)"
                         @click="handleApprove(card, true)"
                       >
                         <LoaderCircle v-if="approving" :size="14" class="spin" />

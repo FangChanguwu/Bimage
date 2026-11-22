@@ -1205,9 +1205,13 @@ export class AgentService {
     config: AgentSessionConfig,
     identity: Owner,
     remainingImages: number,
+    strict = false,
   ): AgentPlanItem[] {
     if (!Array.isArray(rawItems) || !rawItems.length) {
       throw fail(400, "生图计划为空");
+    }
+    if (remainingImages <= 0) {
+      throw fail(400, "超出本轮生图预算上限");
     }
     const items: AgentPlanItem[] = [];
     let runningTotal = 0;
@@ -1215,7 +1219,10 @@ export class AgentService {
     for (let i = 0; i < Math.min(rawItems.length, 8); i++) {
       const raw = object(rawItems[i]);
       const prompt = typeof raw.prompt === "string" ? raw.prompt.trim() : "";
-      if (!prompt) continue;
+      if (!prompt) {
+        if (strict) throw fail(400, "生图提示词不能为空");
+        continue;
+      }
       const title =
         typeof raw.title === "string" && raw.title.trim()
           ? raw.title.trim().slice(0, 80)
@@ -1648,7 +1655,8 @@ export class AgentService {
     const runRow = this.store.get<AgentRunRow>(
       "SELECT * FROM agent_runs WHERE id=?",
       runId,
-    )!;
+    );
+    if (!runRow) return;
     const handle: ActiveRunHandle = {
       runId,
       controller,
@@ -1656,31 +1664,31 @@ export class AgentService {
     };
     this.activeRuns.set(sessionId, handle);
 
-    const provider = this.providers.usable(config.textProviderId, identity);
-    const llmMessages = [...initialLlmMessages];
-
-    let assistantMessageId = existingAssistantMessageId;
-    let assistantContent = "";
-    let assistantReasoning = "";
-    let assistantCards: AgentCard[] = [];
-
-    if (assistantMessageId) {
-      const existing = this.store.get<AgentMessageRow>(
-        "SELECT * FROM agent_messages WHERE id=?",
-        assistantMessageId,
-      );
-      if (existing) {
-        assistantContent = existing.content;
-        assistantReasoning = existing.reasoning;
-        assistantCards = parseJsonSafe<AgentCard[]>(existing.cards, []);
-      }
-    } else {
-      const created = this.insertMessage(sessionId, identity.id, "assistant", "");
-      assistantMessageId = created.id;
-      this.emit(sessionId, "message", this.formatMessage(created, identity));
-    }
-
     try {
+      const provider = this.providers.usable(config.textProviderId, identity);
+      const llmMessages = [...initialLlmMessages];
+
+      let assistantMessageId = existingAssistantMessageId;
+      let assistantContent = "";
+      let assistantReasoning = "";
+      let assistantCards: AgentCard[] = [];
+
+      if (assistantMessageId) {
+        const existing = this.store.get<AgentMessageRow>(
+          "SELECT * FROM agent_messages WHERE id=?",
+          assistantMessageId,
+        );
+        if (existing) {
+          assistantContent = existing.content;
+          assistantReasoning = existing.reasoning;
+          assistantCards = parseJsonSafe<AgentCard[]>(existing.cards, []);
+        }
+      } else {
+        const created = this.insertMessage(sessionId, identity.id, "assistant", "");
+        assistantMessageId = created.id;
+        this.emit(sessionId, "message", this.formatMessage(created, identity));
+      }
+
       for (let step = startStep; step < MAX_AGENT_STEPS; step++) {
         if (controller.signal.aborted) break;
 
@@ -2012,48 +2020,15 @@ export class AgentService {
     config: AgentSessionConfig,
     pending: PendingPlanPayload,
     approved: boolean,
-    editedItems?: AgentPlanItem[],
+    itemsToRun: AgentPlanItem[],
     feedback?: string,
   ): Promise<void> {
-    const msgRow = this.store.get<AgentMessageRow>(
-      "SELECT * FROM agent_messages WHERE id=?",
-      pending.messageId,
-    );
-    const cards = msgRow ? parseJsonSafe<AgentCard[]>(msgRow.cards, []) : [];
-    const planCard = cards.find(
-      (c): c is AgentPlanCard => c.type === "plan" && c.id === pending.cardId,
-    );
-
+    const controller = new AbortController();
     const runRow = this.store.get<AgentRunRow>(
       "SELECT * FROM agent_runs WHERE id=?",
       runId,
-    )!;
-    const remainingImages = Math.max(0, runRow.budgetImages - runRow.usedImages);
-
-    const itemsToRun = approved
-      ? this.sanitizePlanItems(
-          editedItems?.length ? editedItems : pending.items,
-          config,
-          identity,
-          remainingImages,
-        )
-      : pending.items;
-
-    if (planCard) {
-      planCard.status = approved ? "approved" : "rejected";
-      planCard.items = itemsToRun;
-      planCard.totalImages = itemsToRun.reduce((s, it) => s + it.count, 0);
-      this.updateMessage(pending.messageId, { cards });
-      this.emit(sessionId, "card", { messageId: pending.messageId, card: planCard });
-    }
-
-    this.updateRun(runId, {
-      status: "running",
-      pendingPlan: null,
-      error: null,
-    });
-
-    const controller = new AbortController();
+    );
+    if (!runRow) return;
     const handle: ActiveRunHandle = {
       runId,
       controller,
@@ -2067,6 +2042,23 @@ export class AgentService {
     ];
 
     try {
+      const msgRow = this.store.get<AgentMessageRow>(
+        "SELECT * FROM agent_messages WHERE id=?",
+        pending.messageId,
+      );
+      const cards = msgRow ? parseJsonSafe<AgentCard[]>(msgRow.cards, []) : [];
+      const planCard = cards.find(
+        (c): c is AgentPlanCard => c.type === "plan" && c.id === pending.cardId,
+      );
+
+      if (planCard) {
+        planCard.status = approved ? "approved" : "rejected";
+        planCard.items = itemsToRun;
+        planCard.totalImages = itemsToRun.reduce((s, it) => s + it.count, 0);
+        this.updateMessage(pending.messageId, { cards });
+        this.emit(sessionId, "card", { messageId: pending.messageId, card: planCard });
+      }
+
       if (approved) {
         const { toolResult } = await this.executeBatchAndWait(
           sessionId,
@@ -2101,6 +2093,7 @@ export class AgentService {
       if (controller.signal.aborted) {
         this.updateRun(runId, {
           status: "cancelled",
+          pendingPlan: null,
           finishedAt: new Date().toISOString(),
         });
         this.emit(sessionId, "done", { runId, status: "cancelled" });
@@ -2109,6 +2102,7 @@ export class AgentService {
           error instanceof Error ? error.message : "执行生图计划失败";
         this.updateRun(runId, {
           status: "failed",
+          pendingPlan: null,
           error: message,
           finishedAt: new Date().toISOString(),
         });
@@ -2123,6 +2117,7 @@ export class AgentService {
     if (controller.signal.aborted) {
       this.updateRun(runId, {
         status: "cancelled",
+        pendingPlan: null,
         finishedAt: new Date().toISOString(),
       });
       this.emit(sessionId, "done", { runId, status: "cancelled" });
@@ -2449,7 +2444,11 @@ export class AgentService {
       );
 
       // Kick off background async loop
-      void this.runAgentLoop(session.id, runId, identity, config, llmMessages);
+      void this.runAgentLoop(session.id, runId, identity, config, llmMessages).catch(
+        (error) => {
+          console.error("[agent] Unhandled runAgentLoop error:", error);
+        },
+      );
 
       response.json({
         session: this.formatSession(this.ownSession(session.id, identity)),
@@ -2481,22 +2480,58 @@ export class AgentService {
       if (!pending) {
         throw fail(409, "计划数据无效");
       }
-      const approved = Boolean(input.approved);
+      if (typeof input.approved !== "boolean") {
+        throw fail(400, "approved 必须是布尔值");
+      }
+      const approved = input.approved;
+      if (input.items !== undefined && !Array.isArray(input.items)) {
+        throw fail(400, "items 必须是数组");
+      }
       const editedItems = Array.isArray(input.items)
-        ? (input.items as AgentPlanItem[])
+        ? (input.items as unknown[])
         : undefined;
       const feedback =
         typeof input.feedback === "string" ? input.feedback : undefined;
 
       const config = normalizeConfig(parseJsonSafe(session.config, {}));
+      const remainingImages = Math.max(0, runRow.budgetImages - runRow.usedImages);
+      let itemsToRun: AgentPlanItem[];
       if (approved) {
-        const imageProviderId =
-          editedItems?.[0]?.providerId || config.imageProviderId;
-        const imageModel = editedItems?.[0]?.model || config.imageModel;
-        if (!imageProviderId || !imageModel) {
-          throw fail(400, "请先在顶部选择生图模型后再批准生成");
+        itemsToRun = this.sanitizePlanItems(
+          editedItems !== undefined ? editedItems : pending.items,
+          config,
+          identity,
+          remainingImages,
+          true,
+        );
+        const checkedProviders = new Set<string>();
+        for (const item of itemsToRun) {
+          if (!item.providerId || !item.model) {
+            throw fail(400, "请先在顶部选择生图模型后再批准生成");
+          }
+          if (!checkedProviders.has(item.providerId)) {
+            this.providers.usable(item.providerId, identity);
+            checkedProviders.add(item.providerId);
+          }
         }
-        this.providers.usable(imageProviderId, identity);
+      } else {
+        itemsToRun = pending.items;
+      }
+
+      const claimed = this.store.db
+        .prepare(
+          "UPDATE agent_runs SET status='running', pendingPlan=NULL, error=NULL WHERE id=? AND status='waiting_approval'",
+        )
+        .run(runRow.id);
+      if (!Number(claimed.changes)) {
+        throw fail(409, "当前没有待确认的生图计划");
+      }
+      const updatedRun = this.store.get<AgentRunRow>(
+        "SELECT * FROM agent_runs WHERE id=?",
+        runRow.id,
+      );
+      if (updatedRun) {
+        this.emit(session.id, "run", this.formatRun(updatedRun));
       }
 
       void this.resumeApprovedPlan(
@@ -2506,9 +2541,11 @@ export class AgentService {
         config,
         pending,
         approved,
-        editedItems,
+        itemsToRun,
         feedback,
-      );
+      ).catch((error) => {
+        console.error("[agent] Unhandled resumeApprovedPlan error:", error);
+      });
 
       response.json({ ok: true, runId: runRow.id, approved });
     });

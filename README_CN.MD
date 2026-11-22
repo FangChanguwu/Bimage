@@ -10,7 +10,7 @@
 
 [English](README.MD) · **简体中文**
 
-![Version](https://img.shields.io/badge/version-0.4.0-blue)
+![Version](https://img.shields.io/badge/version-0.4.1-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 </div>
@@ -30,6 +30,12 @@
 - **历史管理与缓存加速** — 全量提示词搜索、分页加载、一键回填参数、原图单张及 ZIP 批量下载，配合服务端缩略图与账号隔离的浏览器持久缓存。
 - **多用户与管理** — 账号登录、供应商共享、站点品牌自定义、账号并发上限，以及仅管理员可用的 GitHub 版本检测、容器内热更新（含崩溃自动回滚）与一键回退上一版本。
 - **中英文切换** — 随时切换简体中文 / English，切换时保留当前草稿。
+
+### Agent 创作模式
+
+在多轮对话中结合参考图构思画面，灵活调整思考强度与响应速度，确认并编辑批量出图方案，实时追踪出图画廊、自动视觉质检与精选交付集。
+
+![中文版 Agent 创作模式](docs/agent-zh.png)
 
 ### 提示词优化
 

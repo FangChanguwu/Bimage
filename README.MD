@@ -10,7 +10,7 @@
 
 **English** · [简体中文](README_CN.MD)
 
-![Version](https://img.shields.io/badge/version-0.4.0-blue)
+![Version](https://img.shields.io/badge/version-0.4.1-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 </div>
@@ -30,6 +30,12 @@ Connect your own OpenAI-compatible provider to generate images, edit with refere
 - **History & fast loading** — Full-history prompt search, paginated loading, one-click settings restore, original / batch ZIP downloads, and server-generated thumbnails with account-scoped browser cache.
 - **Multi-user & admin** — Account login, shared providers, custom branding, per-user concurrency limits, and admin-only GitHub update checks, in-container hot updates with automatic crash rollback, and one-click version rollback.
 - **Bilingual UI** — Instant English / Simplified Chinese switching with draft preservation.
+
+### Agent Creation Mode
+
+Collaborate with an AI agent in multi-turn conversations with reference images, thinking effort and speed controls, editable batch generation plans, live gallery progress, automatic vision inspection, and curated deliverables.
+
+![Agent creation mode](docs/agent-en.png)
 
 ### Prompt Optimization
 

@@ -257,9 +257,9 @@ async function deleteJob() {
         <template v-for="(value, key) in job.form" :key="key"
           ><template
             v-if="
-              !['prompt', 'references', 'mask', 'providerId', 'manualSize'].includes(
+              !['prompt', 'references', 'mask', 'providerId', 'manualSize', 'source', 'agentSessionId'].includes(
                 key,
-              )
+              ) && value !== undefined && value !== ''
             "
             ><dt>{{ t(detailLabels[key] || key) }}</dt>
             <dd>{{ value }}</dd></template

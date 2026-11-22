@@ -231,7 +231,7 @@ function handleUnfavorite(asset: string) {
             <template v-for="(value, key) in selected.form" :key="key">
               <template
                 v-if="
-                  !['prompt', 'references', 'mask', 'providerId', 'manualSize'].includes(
+                  !['prompt', 'references', 'mask', 'providerId', 'manualSize', 'source', 'agentSessionId'].includes(
                     key,
                   ) && value !== undefined && value !== ''
                 "
