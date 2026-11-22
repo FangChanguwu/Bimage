@@ -57,11 +57,11 @@
 
 旧成员工作区的数据保留但不会分配给新账号；不提供认领入口。旧数据的启动迁移保护和禁止重试无有效账号所有者任务的检查仍然生效。
 
-## 版本与更新
+## 版本与更新（仅管理员）
 
-- `GET /version`：返回当前后端版本、仓库信息、最近缓存的 GitHub Release 检查结果与本机 Git 工作区状态（`available`/`commit`/`branch`/`dirty`）。
-- `POST /version/check {force?:boolean}`：向 GitHub Releases 查询最新版本与历史发布列表（支持 `BIMAGE_GITHUB_REPO` 覆盖仓库，默认 `FangChanguwu/Bimage`），返回语义化版本比较结果。
-- `POST /version/rollback {tag}`（仅管理员）：校验目标标签合法性与 Git 工作区清洁状态（存在未提交修改返回 409），拉取标签并切换工作区至指定发布版本。
+- `GET /admin/version`：返回当前后端版本、仓库信息、最近缓存的 GitHub Release 检查结果与本机 Git 工作区状态（`available`/`commit`/`branch`/`dirty`）。
+- `POST /admin/version/check {force?:boolean}`：向 GitHub Releases 查询最新版本与历史发布列表（支持 `BIMAGE_GITHUB_REPO` 覆盖仓库，默认 `FangChanguwu/Bimage`），返回语义化版本比较结果。
+- `POST /admin/version/rollback {tag}`：校验目标标签合法性与 Git 工作区清洁状态（存在未提交修改返回 409），拉取标签并切换工作区至指定发布版本。
 
 ## 安全与类型
 

@@ -155,7 +155,6 @@ export const shellMessages: Record<string, string> = {
   '确认回退到 {tag}': 'Rollback to {tag}',
   '正在回退…': 'Rolling back…',
   '回退版本失败': 'Rollback failed',
-  '仅管理员可执行在线回退，或复制上方命令手动切换。': 'Only administrators can trigger in-app rollback, or copy the command above to switch manually.',
   '当前非 Git 源码部署环境，请复制上方命令在宿主机回退并重建。': 'Not running in a Git checkout; copy the command above to roll back and rebuild on the host.',
   '检测到工作区有未提交修改；执行回退前请先提交或暂存本地改动。': 'Uncommitted changes detected in the working tree; commit or stash them before rolling back.',
   '正在获取 GitHub 发布列表…': 'Loading GitHub releases…',

@@ -262,7 +262,7 @@ export function mountVersion(
     return inflight;
   }
 
-  app.get("/api/version", async (_request, response) => {
+  app.get("/api/admin/version", admin, async (_request, response) => {
     const current = readCurrentVersion();
     const git = await inspectGit();
     const validCache =
@@ -272,7 +272,7 @@ export function mountVersion(
     response.json(buildSnapshot(current, git, validCache));
   });
 
-  app.post("/api/version/check", checkRate, async (request, response) => {
+  app.post("/api/admin/version/check", admin, checkRate, async (request, response) => {
     const input = request.body && typeof request.body === "object" ? (request.body as Record<string, unknown>) : {};
     const force = input.force === true;
     const current = readCurrentVersion();

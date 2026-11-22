@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { RefreshCw, ExternalLink, RotateCcw, Copy, Check } from "lucide-vue-next";
-import Modal from "./Modal.vue";
+import { RefreshCw, ExternalLink, RotateCcw, Copy, Check, X } from "lucide-vue-next";
 import SelectControl from "./SelectControl.vue";
 import { t, locale } from "../i18n";
 import type { Api, ReleaseInfo, RollbackResult, VersionSnapshot } from "../types";
@@ -10,7 +9,7 @@ import type { NoticeType } from "./ToastNotice.vue";
 const props = defineProps<{
   api: Api;
   signal: AbortSignal;
-  isAdmin: boolean;
+  anchor: HTMLElement | null;
   snapshot: VersionSnapshot | null;
   fallbackVersion: string;
 }>();
@@ -21,6 +20,9 @@ const emit = defineEmits<{
   notice: [message: string, type: NoticeType];
 }>();
 
+const popoverRef = ref<HTMLDivElement | null>(null);
+const positionStyle = ref<Record<string, string>>({});
+const closing = ref(false);
 const data = ref<VersionSnapshot | null>(props.snapshot);
 const checking = ref(false);
 const checkError = ref("");
@@ -31,7 +33,7 @@ const rollbackError = ref("");
 const rollbackSuccess = ref("");
 const copiedCmd = ref(false);
 let copyTimer: ReturnType<typeof setTimeout> | undefined;
-
+let closeTimer: ReturnType<typeof setTimeout> | undefined;
 const currentVersion = computed(() => data.value?.current || props.fallbackVersion);
 const repoName = computed(() => data.value?.repo || "FangChanguwu/Bimage");
 const releasesUrl = computed(
@@ -113,7 +115,7 @@ async function checkUpdates(force: boolean) {
   checkError.value = "";
   try {
     const next = await props.api<VersionSnapshot>(
-      "/version/check",
+      "/admin/version/check",
       { force },
       "POST",
       props.signal,
@@ -172,7 +174,7 @@ async function executeRollback() {
     );
     rollbackSuccess.value = result.message;
     emit("notice", result.message, "success");
-    const refreshed = await props.api<VersionSnapshot>("/version", undefined, "GET", props.signal).catch(() => null);
+    const refreshed = await props.api<VersionSnapshot>("/admin/version", undefined, "GET", props.signal).catch(() => null);
     if (refreshed) {
       data.value = { ...refreshed, releases: data.value?.releases ?? refreshed.releases };
       emit("update", data.value);
@@ -184,11 +186,80 @@ async function executeRollback() {
   }
 }
 
-onBeforeUnmount(() => clearTimeout(copyTimer));
+function place() {
+  const el = props.anchor;
+  if (!el) return;
+  const r = el.getBoundingClientRect();
+  const sidebar = el.closest(".sidebar")?.getBoundingClientRect();
+  const margin = 12;
+  const popWidth = Math.min(324, Math.max(240, window.innerWidth - margin * 2));
+  const anchorCenter = r.left + r.width / 2;
+  const centeredLeft = anchorCenter - popWidth / 2;
+  const minLeft = sidebar && window.innerWidth > 900 ? Math.max(margin, sidebar.left) : margin;
+  const left = Math.max(minLeft, Math.min(centeredLeft, window.innerWidth - popWidth - margin));
+  const top = Math.max(margin, r.bottom + 8);
+  const maxHeight = Math.max(200, window.innerHeight - top - 16);
+  const caretX = Math.max(18, Math.min(popWidth - 18, anchorCenter - left));
+  positionStyle.value = {
+    top: `${Math.round(top)}px`,
+    left: `${Math.round(left)}px`,
+    width: `${Math.round(popWidth)}px`,
+    maxHeight: `${Math.round(maxHeight)}px`,
+    "--version-caret-x": `${Math.round(caretX)}px`,
+    transformOrigin: `${Math.round(caretX)}px top`,
+  };
+}
+
+function close() {
+  if (closing.value || rollingBack.value) return;
+  closing.value = true;
+  const delay = matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 110;
+  closeTimer = setTimeout(() => emit("close"), delay);
+}
+
+function onPointerDownOutside(e: Event) {
+  if (rollingBack.value) return;
+  const target = e.target as Node | null;
+  if (!target) return;
+  if (popoverRef.value?.contains(target)) return;
+  if (props.anchor?.contains(target)) return;
+  if (target instanceof Element && target.closest(".select-menu")) return;
+  close();
+}
+
+function onKeyDown(e: KeyboardEvent) {
+  if (e.key === "Escape" && !rollingBack.value && !document.querySelector(".select-menu")) {
+    e.preventDefault();
+    close();
+    props.anchor?.focus();
+  }
+}
+
+function onViewportScroll(e: Event) {
+  const target = e.target as Node | null;
+  if (target && popoverRef.value?.contains(target)) return;
+  place();
+}
+
+watch(() => props.anchor, place);
+
+onBeforeUnmount(() => {
+  clearTimeout(copyTimer);
+  clearTimeout(closeTimer);
+  document.removeEventListener("pointerdown", onPointerDownOutside, true);
+  document.removeEventListener("keydown", onKeyDown);
+  window.removeEventListener("resize", place);
+  window.removeEventListener("scroll", onViewportScroll, true);
+});
 
 onMounted(async () => {
+  place();
+  document.addEventListener("pointerdown", onPointerDownOutside, true);
+  document.addEventListener("keydown", onKeyDown);
+  window.addEventListener("resize", place);
+  window.addEventListener("scroll", onViewportScroll, true);
   try {
-    const local = await props.api<VersionSnapshot>("/version", undefined, "GET", props.signal);
+    const local = await props.api<VersionSnapshot>("/admin/version", undefined, "GET", props.signal);
     data.value = local;
     emit("update", local);
     if (!local.checkedAt) {
@@ -201,51 +272,68 @@ onMounted(async () => {
 </script>
 
 <template>
-  <Modal :title="t('版本信息')" :locked="rollingBack" @close="emit('close')">
-    <div class="version-modal">
-      <div class="version-summary">
-        <div class="version-current">
-          <div class="version-number-row">
-            <strong class="version-number">v{{ currentVersion }}</strong>
-            <span v-if="data?.git.commit" class="version-commit">{{ data.git.commit }}</span>
+  <Teleport to="body">
+    <div
+      ref="popoverRef"
+      role="dialog"
+      :aria-label="t('版本信息')"
+      class="version-popover"
+      :class="{ closing }"
+      :style="positionStyle"
+    >
+      <div class="version-modal">
+        <div class="version-summary">
+          <div class="version-current">
+            <div class="version-number-row">
+              <strong class="version-number">v{{ currentVersion }}</strong>
+              <span v-if="data?.git.commit" class="version-commit">{{ data.git.commit }}</span>
+              <span class="status version-status" :class="statusClass">
+                <span class="status-dot" aria-hidden="true" />
+                {{ statusText }}
+              </span>
+            </div>
+            <p class="version-meta">
+              GitHub · {{ repoName }}
+              <template v-if="data?.checkedAt">
+                · {{ t("上次检测 {time}", { time: formatDateTime(data.checkedAt) }) }}
+              </template>
+            </p>
           </div>
-          <p class="version-meta">
-            GitHub · {{ repoName }}
-            <template v-if="data?.checkedAt">
-              · {{ t("上次检测 {time}", { time: formatDateTime(data.checkedAt) }) }}
-            </template>
-          </p>
+          <button
+            type="button"
+            class="icon-button version-close"
+            :aria-label="t('关闭弹窗')"
+            :disabled="rollingBack"
+            @click="close"
+          >
+            <X :size="14" aria-hidden="true" />
+          </button>
         </div>
-        <span class="status" :class="statusClass">
-          <span class="status-dot" aria-hidden="true" />
-          {{ statusText }}
-        </span>
-      </div>
 
-      <div class="version-actions">
-        <button type="button" class="primary" :disabled="checking || rollingBack" @click="checkUpdates(true)">
-          <RefreshCw :size="15" :class="{ spinner: checking }" aria-hidden="true" />
-          {{ t(checking ? "正在检测…" : "检测更新") }}
-        </button>
-        <a
-          class="version-link-btn"
-          :href="viewReleaseUrl"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <ExternalLink :size="15" aria-hidden="true" />
-          {{ t("查看发布") }}
-        </a>
-        <button
-          type="button"
-          :class="{ active: rollbackOpen }"
-          :disabled="rollingBack"
-          @click="toggleRollback"
-        >
-          <RotateCcw :size="15" aria-hidden="true" />
-          {{ t("回退版本") }}
-        </button>
-      </div>
+        <div class="version-actions">
+          <button type="button" class="primary" :disabled="checking || rollingBack" @click="checkUpdates(true)">
+            <RefreshCw :size="13" :class="{ spinner: checking }" aria-hidden="true" />
+            {{ t(checking ? "正在检测…" : "检测更新") }}
+          </button>
+          <a
+            class="version-link-btn"
+            :href="viewReleaseUrl"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            <ExternalLink :size="13" aria-hidden="true" />
+            {{ t("查看发布") }}
+          </a>
+          <button
+            type="button"
+            :class="{ active: rollbackOpen }"
+            :disabled="rollingBack"
+            @click="toggleRollback"
+          >
+            <RotateCcw :size="13" aria-hidden="true" />
+            {{ t("回退版本") }}
+          </button>
+        </div>
 
       <p v-if="checkError" class="error-message version-feedback" role="alert">{{ checkError }}</p>
 
@@ -291,11 +379,10 @@ onMounted(async () => {
 
           <p v-if="rollbackError" class="error-message version-feedback" role="alert">{{ rollbackError }}</p>
           <p v-else-if="rollbackSuccess" class="version-success version-feedback" role="status">{{ rollbackSuccess }}</p>
-          <p v-else-if="!isAdmin" class="muted version-hint">{{ t("仅管理员可执行在线回退，或复制上方命令手动切换。") }}</p>
           <p v-else-if="!data?.git.available" class="muted version-hint">{{ t("当前非 Git 源码部署环境，请复制上方命令在宿主机回退并重建。") }}</p>
           <p v-else-if="data?.git.dirty" class="muted version-hint">{{ t("检测到工作区有未提交修改；执行回退前请先提交或暂存本地改动。") }}</p>
 
-          <div v-if="isAdmin && data?.git.available" class="version-rollback-footer">
+          <div v-if="data?.git.available" class="version-rollback-footer">
             <button
               type="button"
               class="delete-confirm"
@@ -330,6 +417,7 @@ onMounted(async () => {
         </div>
         <div v-if="data.latest.body" class="version-notes-body">{{ data.latest.body }}</div>
       </section>
+      </div>
     </div>
-  </Modal>
+  </Teleport>
 </template>

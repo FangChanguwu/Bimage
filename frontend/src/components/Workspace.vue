@@ -58,16 +58,24 @@ const page = ref<"studio" | "users" | "settings">("studio"),
   notice = ref<Notice | null>(null),
   quick = ref(false),
   versionOpen = ref(false),
+  versionTrigger = ref<HTMLButtonElement | null>(null),
   versionSnapshot = ref<VersionSnapshot | null>(null),
   busy = ref(false),
   loading = ref(true);
-const displayVersion = computed(() => versionSnapshot.value?.current || appVersion);
+const isAdmin = computed(() => props.identity.role === "admin");
+const displayVersion = computed(() => (isAdmin.value && versionSnapshot.value?.current) || appVersion);
 const pageTitle = computed(() => t(({ studio: "图像工作台", users: "用户管理", settings: "系统设置" })[page.value]));
 const pageContext = computed(() => t(({ studio: "让想法，成为画面。", users: "管理登录账号与图像请求权限。", settings: "连接服务，整理创作偏好。" })[page.value]));
 const studioReentered = ref(false);
 watch(page, (current, previous) => {
   if (current === 'studio' && previous !== 'studio') studioReentered.value = true;
   if (current !== previous) window.scrollTo({ top: 0, behavior: 'instant' });
+});
+watch(isAdmin, (allowed) => {
+  if (!allowed) {
+    versionOpen.value = false;
+    versionSnapshot.value = null;
+  }
 });
 let active = true,
   draftVersion = 0,
@@ -176,7 +184,16 @@ onMounted(async () => {
     resolveDefaults();
   });
   loading.value = false;
-  if (active) history.start();
+  if (active) {
+    history.start();
+    if (isAdmin.value) {
+      void props.api<VersionSnapshot>("/admin/version/check", { force: false }, "POST", props.signal)
+        .then((snapshot) => {
+          if (active && isAdmin.value && !props.signal.aborted) versionSnapshot.value = snapshot;
+        })
+        .catch(() => {});
+    }
+  }
 });
 onBeforeUnmount(() => {
   active = false;
@@ -306,16 +323,21 @@ function defaultsSaved(value: Settings) {
         <img :src="site.icon || '/Bimage.png'" :alt="t('站点图标')" />
         <div class="sidebar-tools">
           <button
+            v-if="isAdmin"
+            ref="versionTrigger"
             type="button"
             class="version-pill"
-            :class="{ 'has-update': versionSnapshot?.hasUpdate }"
+            :class="{ 'has-update': versionSnapshot?.hasUpdate, open: versionOpen }"
             :aria-label="t('版本信息')"
-            :title="t('查看版本与更新')"
-            @click="versionOpen = true"
+            aria-haspopup="dialog"
+            :aria-expanded="versionOpen"
+            :title="versionSnapshot?.hasUpdate && versionSnapshot.latest ? t('发现新版本 {tag}', { tag: versionSnapshot.latest.tag }) : t('查看版本与更新')"
+            @click="versionOpen = !versionOpen"
           >
             <span>v{{ displayVersion }}</span>
             <span v-if="versionSnapshot?.hasUpdate" class="version-dot" aria-hidden="true" />
           </button>
+          <span v-else class="version-pill version-pill-static">v{{ appVersion }}</span>
           <div class="appearance-controls">
             <LanguageSwitch />
             <button type="button" class="icon-button theme-toggle" :aria-label="t('切换主题')" :title="t('切换浅色 / 暗色')" @click="emit('theme')">
@@ -439,10 +461,10 @@ function defaultsSaved(value: Settings) {
         @close="quick = false"
         @apply="(prompt, references) => change({ ...form, prompt, references })"
       /><VersionModal
-        v-if="versionOpen"
+        v-if="isAdmin && versionOpen"
         :api="api"
         :signal="signal"
-        :is-admin="identity.role === 'admin'"
+        :anchor="versionTrigger"
         :snapshot="versionSnapshot"
         :fallback-version="appVersion"
         @close="versionOpen = false"
