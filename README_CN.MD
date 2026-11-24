@@ -10,7 +10,7 @@
 
 [English](README.MD) · **简体中文**
 
-![Version](https://img.shields.io/badge/version-0.4.1-blue)
+![Version](https://img.shields.io/badge/version-0.4.2-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 </div>

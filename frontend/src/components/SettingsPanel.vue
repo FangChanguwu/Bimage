@@ -72,6 +72,7 @@ async function remove() {
 }
 </script>
 <template>
+  <div class="settings-view">
   <div class="settings-tabs" role="tablist" :aria-label="t('设置分类')">
     <button
       v-for="item in [
@@ -88,7 +89,8 @@ async function remove() {
       {{ t(item.label) }}
     </button>
   </div>
-  <div v-if="tab === 'providers'" class="provider-settings">
+  <Transition name="tab-switch" mode="out-in">
+  <div v-if="tab === 'providers'" key="providers" class="provider-settings">
     <section class="panel settings-section">
       <div class="section-head">
         <h2>{{ t('已连接的供应商') }}</h2>
@@ -159,16 +161,18 @@ async function remove() {
       </footer>
     </section>
   </div>
-  <section v-if="tab === 'cache'" class="panel settings-section">
+  <section v-else-if="tab === 'cache'" key="cache" class="panel settings-section">
     <ImageCacheSettings :signal="signal" @cleared="emit('cleared')" />
   </section>
   <SiteSettings
-    v-if="tab === 'site' && identity.role === 'admin'"
+    v-else-if="tab === 'site' && identity.role === 'admin'"
+    key="site"
     :site="site"
     :api="api"
     :run="run"
     @saved="(s) => emit('site', s)"
   />
+  </Transition>
   <ProviderEditor
     v-if="adding || editing"
     :key="editing?.id || 'new'"
@@ -185,6 +189,7 @@ async function remove() {
       ><button class="primary" @click="remove">{{ t('确认删除') }}</button>
     </footer></Modal
   >
+  </div>
 </template>
 
 <style scoped>

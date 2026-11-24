@@ -14,7 +14,7 @@ import AssetImage from "./AssetImage.vue";
 import Modal from "./Modal.vue";
 import Lightbox from "./Lightbox.vue";
 import ReferenceImages from "./ReferenceImages.vue";
-import { download, copyImage } from "../composables/assetCache";
+import { assetCache, download, copyImage } from "../composables/assetCache";
 import type { FavoriteItem, GenerationForm, Run } from "../types";
 import { t, formatDate } from "../i18n";
 
@@ -47,12 +47,15 @@ const emit = defineEmits<{
 const selectedId = ref<string | null>(null);
 const previewOpen = ref(false);
 const copiedPrompt = ref(false);
+const detailImageState = ref<"loading" | "ready" | "error">("loading");
 let copyTimer: ReturnType<typeof setTimeout> | undefined;
 
 const selected = computed(() =>
   selectedId.value ? props.favorites.find((item) => item.id === selectedId.value) ?? null : null,
 );
-
+const detailThumb = computed(() =>
+  selected.value ? assetCache(props.signal).peek(selected.value.asset, "thumbnail") : undefined,
+);
 const galleryItems = computed(() =>
   props.favorites.map((item) => ({ asset: item.asset, mime: item.mime })),
 );
@@ -61,12 +64,16 @@ const selectedIndex = computed(() =>
   selected.value ? props.favorites.findIndex((item) => item.id === selected.value!.id) : 0,
 );
 
-watch(selected, (item) => {
-  if (!item) {
-    previewOpen.value = false;
-    copiedPrompt.value = false;
-  }
-});
+watch(
+  () => selected.value?.asset ?? null,
+  (asset) => {
+    detailImageState.value = "loading";
+    if (!asset) {
+      previewOpen.value = false;
+      copiedPrompt.value = false;
+    }
+  },
+);
 
 function openDetail(item: FavoriteItem) {
   selectedId.value = item.id;
@@ -142,16 +149,36 @@ function handleUnfavorite(asset: string) {
           <button
             type="button"
             class="favorite-detail-image"
+            :class="{ 'has-placeholder': Boolean(detailThumb) && detailImageState !== 'error' }"
+            :style="{
+              '--preview-ratio':
+                selected.width && selected.height && selected.width > 0 && selected.height > 0
+                  ? selected.width / selected.height
+                  : undefined,
+            }"
             :aria-label="t('查看大图')"
             @click="previewOpen = true"
           >
+            <img
+              v-if="detailThumb && detailImageState !== 'error'"
+              :src="detailThumb"
+              alt=""
+              aria-hidden="true"
+              class="favorite-detail-placeholder"
+              :class="{ 'is-replaced': detailImageState === 'ready' }"
+            />
             <AssetImage
               :asset="selected.asset"
               :signal="signal"
-              variant="original"
+              original
               :alt="selected.form.prompt.slice(0, 80) || t('收藏图片')"
+              @state="detailImageState = $event"
             />
-            <span class="favorite-zoom-badge" aria-hidden="true">
+            <span
+              v-if="detailImageState !== 'error'"
+              class="favorite-zoom-badge"
+              aria-hidden="true"
+            >
               <Maximize2 :size="14" />
             </span>
           </button>

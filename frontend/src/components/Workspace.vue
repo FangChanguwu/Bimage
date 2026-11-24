@@ -75,11 +75,25 @@ const displayVersion = computed(() => (isAdmin.value && versionSnapshot.value?.c
 const pageTitle = computed(() => t(({ agent: "Agent 创作", studio: "图像工作台", favorites: "收藏夹", users: "用户管理", settings: "系统设置" })[page.value]));
 const pageContext = computed(() => t(({ agent: "对话构思、批量出图与自动视觉验收。", studio: "让想法，成为画面。", favorites: "精选画面与完整创作记录。", users: "管理登录账号与图像请求权限。", settings: "连接服务，整理创作偏好。" })[page.value]));
 const favoriteAssets = computed(() => new Set(favorites.value.map((item) => item.asset)));
-const studioReentered = ref(false);
+const pageOrder: Record<"agent" | "studio" | "favorites" | "users" | "settings", number> = {
+  agent: 0,
+  studio: 1,
+  favorites: 2,
+  users: 3,
+  settings: 4,
+};
+const pageTransition = ref<"page-forward" | "page-backward">("page-forward");
+let pendingScrollReset = false;
 watch(page, (current, previous) => {
-  if (current === 'studio' && previous !== 'studio') studioReentered.value = true;
-  if (current !== previous) window.scrollTo({ top: 0, behavior: 'instant' });
+  if (current === previous) return;
+  pageTransition.value = pageOrder[current] >= pageOrder[previous] ? "page-forward" : "page-backward";
+  pendingScrollReset = true;
 });
+function onPageAfterLeave() {
+  if (!pendingScrollReset) return;
+  pendingScrollReset = false;
+  window.scrollTo({ top: 0, behavior: "instant" });
+}
 watch(isAdmin, (allowed) => {
   if (!allowed) {
     versionOpen.value = false;
@@ -504,43 +518,50 @@ function defaultsSaved(value: Settings) {
     </aside>
     <main class="main-content">
       <header class="page-header">
-        <h1>{{ pageTitle }}</h1>
-        <span class="page-context">{{ pageContext }}</span>
+        <Transition :name="pageTransition" mode="out-in">
+          <div :key="page" class="page-header-copy">
+            <h1>{{ pageTitle }}</h1>
+            <span class="page-context">{{ pageContext }}</span>
+          </div>
+        </Transition>
       </header>
       <ToastNotice :notice="translatedNotice" @close="notice = null" @settings="page = 'settings'; notice = null" />
-      <UserManagement v-if="page === 'users' && identity.role === 'admin'" :api="api" @created="notify('用户已创建。', 'success')" />
-      <FavoritesView
-        v-else-if="page === 'favorites'"
-        :favorites="favorites"
-        :loading="favoritesLoading || loading"
-        :signal="signal"
-        :run="run"
-        @unfavorite="unfavorite"
-        @use-as-reference="addAsReference"
-        @restore="restoreFromForm"
-        @go-studio="page = 'studio'"
-      />
-      <div v-else-if="loading" class="loading-layout" :aria-label="t('载入工作台')">
-        <div />
-        <div />
-      </div>
-      <AgentView
-        v-else-if="page === 'agent'"
-        :providers="available"
-        :settings="settings"
-        :form="form"
-        :favorite-assets="favoriteAssets"
-        :api="api"
-        :signal="signal"
-        :run="run"
-        @update:settings="patchSettings"
-        @restore-form="restorePartialForm"
-        @toggle-favorite="(payload) => toggleFavorite(payload.jobId, payload.taskId, payload.asset)"
-        @jobs-changed="void refreshHistory()"
-        @go-settings="page = 'settings'"
-        @notify="(message, type) => notify(message, type)"
-      />
-      <div v-else-if="page === 'studio'" class="workspace" :class="{ 'studio-reentered': studioReentered }">
+      <Transition :name="pageTransition" mode="out-in" @after-leave="onPageAfterLeave">
+        <UserManagement v-if="page === 'users' && identity.role === 'admin'" key="users" :api="api" @created="notify('用户已创建。', 'success')" />
+        <FavoritesView
+          v-else-if="page === 'favorites'"
+          key="favorites"
+          :favorites="favorites"
+          :loading="favoritesLoading || loading"
+          :signal="signal"
+          :run="run"
+          @unfavorite="unfavorite"
+          @use-as-reference="addAsReference"
+          @restore="restoreFromForm"
+          @go-studio="page = 'studio'"
+        />
+        <div v-else-if="loading" key="loading" class="loading-layout" :aria-label="t('载入工作台')">
+          <div />
+          <div />
+        </div>
+        <AgentView
+          v-else-if="page === 'agent'"
+          key="agent"
+          :providers="available"
+          :settings="settings"
+          :form="form"
+          :favorite-assets="favoriteAssets"
+          :api="api"
+          :signal="signal"
+          :run="run"
+          @update:settings="patchSettings"
+          @restore-form="restorePartialForm"
+          @toggle-favorite="(payload) => toggleFavorite(payload.jobId, payload.taskId, payload.asset)"
+          @jobs-changed="void refreshHistory()"
+          @go-settings="page = 'settings'"
+          @notify="(message, type) => notify(message, type)"
+        />
+        <div v-else-if="page === 'studio'" key="studio" class="workspace">
         <Composer
           :form="form"
           :providers="available"
@@ -590,20 +611,22 @@ function defaultsSaved(value: Settings) {
           <button v-if="hasMore" type="button" class="history-load-more" :disabled="loadingMore" @click="run(history.loadMore)">{{ t(loadingMore ? '加载中…' : '加载更多') }}</button>
         </section>
       </div>
-      <SettingsPanel
-        v-else
-        :signal="signal"
-        :providers="providers"
-        :settings="settings"
-        :site="site"
-        :identity="identity"
-        :api="api"
-        :run="run"
-        @refresh="run(refresh)"
-        @settings="defaultsSaved"
-        @site="(s) => emit('site', s)"
-        @cleared="notify('图片缓存已清除', 'success')"
-      /><QuickPrompt
+        <SettingsPanel
+          v-else
+          key="settings"
+          :signal="signal"
+          :providers="providers"
+          :settings="settings"
+          :site="site"
+          :identity="identity"
+          :api="api"
+          :run="run"
+          @refresh="run(refresh)"
+          @settings="defaultsSaved"
+          @site="(s) => emit('site', s)"
+          @cleared="notify('图片缓存已清除', 'success')"
+        />
+      </Transition><QuickPrompt
         v-if="quick"
         :form="form"
         :settings="settings"
