@@ -60,6 +60,7 @@ export const shellMessages: Record<string, string> = {
   '试试其他提示词，或清除搜索查看全部记录。': 'Try another prompt or clear the search to see all records.',
   '加载中…': 'Loading…',
   '加载更多': 'Load more',
+  '回到顶部': 'Back to top',
   '用户': 'User',
   '管理员': 'Administrator',
   '用户列表': 'Users',

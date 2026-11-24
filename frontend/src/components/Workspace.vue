@@ -8,6 +8,7 @@ import {
   Moon,
   Sun,
   Image,
+  ArrowUp,
   ArrowUpRight,
   X,
   Search,
@@ -69,7 +70,8 @@ const page = ref<"agent" | "studio" | "favorites" | "users" | "settings">("studi
   versionTrigger = ref<HTMLButtonElement | null>(null),
   versionSnapshot = ref<VersionSnapshot | null>(null),
   busy = ref(false),
-  loading = ref(true);
+  loading = ref(true),
+  showBackToTop = ref(false);
 const isAdmin = computed(() => props.identity.role === "admin");
 const displayVersion = computed(() => (isAdmin.value && versionSnapshot.value?.current) || appVersion);
 const pageTitle = computed(() => t(({ agent: "Agent 创作", studio: "图像工作台", favorites: "收藏夹", users: "用户管理", settings: "系统设置" })[page.value]));
@@ -89,10 +91,24 @@ watch(page, (current, previous) => {
   pageTransition.value = pageOrder[current] >= pageOrder[previous] ? "page-forward" : "page-backward";
   pendingScrollReset = true;
 });
+function updateBackToTop() {
+  showBackToTop.value = page.value === "studio" && !loading.value && window.scrollY > 360;
+}
+function scrollToTop() {
+  const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  window.scrollTo({ top: 0, behavior: reduced ? "auto" : "smooth" });
+}
+watch([page, loading], updateBackToTop);
+onMounted(() => {
+  window.addEventListener("scroll", updateBackToTop, { passive: true });
+  window.addEventListener("resize", updateBackToTop, { passive: true });
+  updateBackToTop();
+});
 function onPageAfterLeave() {
   if (!pendingScrollReset) return;
   pendingScrollReset = false;
   window.scrollTo({ top: 0, behavior: "instant" });
+  updateBackToTop();
 }
 watch(isAdmin, (allowed) => {
   if (!allowed) {
@@ -248,6 +264,8 @@ onMounted(async () => {
 });
 onBeforeUnmount(() => {
   active = false;
+  window.removeEventListener("scroll", updateBackToTop);
+  window.removeEventListener("resize", updateBackToTop);
   clearTimeout(saveTimer);
   clearTimeout(noticeTimer);
   providers.value = [];
@@ -646,6 +664,18 @@ function defaultsSaved(value: Settings) {
         @update="(s) => (versionSnapshot = s)"
         @notice="(msg, type) => notify(msg, type)"
       />
+      <Transition name="back-to-top">
+        <button
+          v-if="showBackToTop"
+          type="button"
+          class="back-to-top"
+          :aria-label="t('回到顶部')"
+          :title="t('回到顶部')"
+          @click="scrollToTop"
+        >
+          <ArrowUp :size="18" aria-hidden="true" />
+        </button>
+      </Transition>
     </main>
   </div>
 </template>

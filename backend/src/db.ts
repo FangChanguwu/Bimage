@@ -83,6 +83,20 @@ export class Store {
             createdAt TEXT NOT NULL
           );
           CREATE INDEX IF NOT EXISTS agent_messages_session_created ON agent_messages(sessionId, createdAt ASC, id ASC);
+          CREATE TABLE IF NOT EXISTS agent_documents(
+            id TEXT NOT NULL PRIMARY KEY,
+            owner TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            mime TEXT NOT NULL,
+            size INTEGER NOT NULL,
+            text TEXT NOT NULL DEFAULT '',
+            charCount INTEGER NOT NULL DEFAULT 0,
+            images TEXT NOT NULL DEFAULT '[]',
+            skippedImages INTEGER NOT NULL DEFAULT 0,
+            truncated INTEGER NOT NULL DEFAULT 0,
+            createdAt TEXT NOT NULL
+          );
+          CREATE INDEX IF NOT EXISTS agent_documents_owner_created ON agent_documents(owner, createdAt DESC);
           CREATE TABLE IF NOT EXISTS agent_runs(
             id TEXT NOT NULL PRIMARY KEY,
             sessionId TEXT NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
@@ -104,6 +118,7 @@ export class Store {
           jobs: { startedAt: "TEXT", finishedAt: "TEXT" },
           tasks: { startedAt: "TEXT", finishedAt: "TEXT" },
           assets: { width: "INTEGER", height: "INTEGER" },
+          agent_messages: { documents: "TEXT NOT NULL DEFAULT '[]'" },
           providers: {
             models: "TEXT DEFAULT '[]'",
             shared: "INTEGER DEFAULT 0",

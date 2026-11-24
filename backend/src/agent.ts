@@ -7,6 +7,7 @@ import { Providers } from "./providers.js";
 import { Queue } from "./queue.js";
 import { body, fail, HttpError, object, param, user } from "./http.js";
 import { MAX_REFERENCE_IMAGES } from "./limits.js";
+import { MAX_AGENT_DOCUMENTS, MAX_DOCX_BYTES, parseDocxDocument } from "./docx.js";
 import type { ImageForm, ProviderRow, TaskStatus } from "./types.js";
 
 type Owner = { id: string; role: "admin" | "user" };
@@ -136,6 +137,29 @@ export interface AgentSessionRow {
   updatedAt: string;
 }
 
+export interface AgentDocumentRef {
+  id: string;
+  name: string;
+  size: number;
+  charCount: number;
+  images: string[];
+  skippedImages: number;
+  truncated: boolean;
+  excerpt: string;
+}
+
+interface AgentDocumentRow {
+  id: string;
+  owner: string;
+  name: string;
+  size: number;
+  text: string;
+  charCount: number;
+  images: string;
+  skippedImages: number;
+  truncated: number;
+}
+
 export interface AgentMessageRow {
   id: string;
   sessionId: string;
@@ -144,6 +168,7 @@ export interface AgentMessageRow {
   content: string;
   reasoning: string;
   attachments: string;
+  documents: string;
   cards: string;
   createdAt: string;
 }
@@ -200,6 +225,7 @@ interface ActiveRunHandle {
 
 const MAX_AGENT_STEPS = 12;
 const MAX_INSPECT_IMAGES = 6;
+const MAX_VISION_IMAGES_PER_MESSAGE = 20;
 const MAX_BUDGET_IMAGES = 24;
 const MAX_RETRIES = 4;
 
@@ -209,6 +235,16 @@ const TERMINAL_TASK_STATUSES = new Set<TaskStatus>([
   "cancelled",
   "interrupted",
 ]);
+
+class VisionUnsupportedError extends HttpError {
+  constructor(model: string) {
+    super(422, `该模型无法理解图片（${model}），请切换支持视觉输入的对话模型后重试`);
+  }
+}
+
+function isVisionUnsupportedError(errText: string): boolean {
+  return /vision|multimodal|image_url|input_image|image input|does not support.*image|not support.*image|cannot.*image|unsupported.*image|images?.*(?:not supported|not allowed|unsupported)|unknown variant.*image_url|content.*must be.*string|expected.*string|invalid.*content|text[- ]only model|不支持.*图|不支持视觉|不支持多模态|非视觉模型|无法理解图片|无法识别图片|无法处理图片/i.test(errText);
+}
 
 function defaultConfig(): AgentSessionConfig {
   return {
@@ -328,6 +364,7 @@ function buildSystemPrompt(
 
 【参考图与图生图接力】
 - 用户粘贴或上传的图片会标注对应的 \`assetId\`（如 \`[附带图片 assetIds: ...]\`）。你也能直接看到最近上传的图片内容。
+- 用户也可能附带 Word（.docx）文档，完整提取文字在 \`[附带文档: ...]\` 内，嵌入图片以 \`[文档图片 #k | assetId: ...]\` 标注。这些图片可直接视觉理解，也可将其 \`assetId\` 传入 \`run_image_batch.references\`。
 - 如果用户希望保留某张图的人物/主体/风格/构图或在其基础上修改，请在 \`run_image_batch\` 对应项的 \`references\` 中填入对应的 \`assetId\`。
 - 你也可以把上一批生成中效果最接近的成图 \`assetId\` 放入下一批 \`references\`，进行定向精修或保持角色一致性的系列延展。
 
@@ -527,6 +564,7 @@ export class AgentService {
   private subscribers = new Map<string, Set<Response>>();
   private activeRuns = new Map<string, ActiveRunHandle>();
   private heartbeatTimer?: ReturnType<typeof setInterval>;
+  private visionProbeCache = new Map<string, { supported: boolean; checkedAt: number }>();
 
   constructor(
     private store: Store,
@@ -637,6 +675,24 @@ export class AgentService {
     });
   }
 
+  private getDocuments(ids: string[], owner: string): AgentDocumentRow[] {
+    return ids.flatMap((id) => {
+      const row = this.store.get<AgentDocumentRow>(
+        "SELECT * FROM agent_documents WHERE id=? AND owner=?", id, owner,
+      );
+      return row ? [row] : [];
+    });
+  }
+
+  private formatDocument(row: AgentDocumentRow): AgentDocumentRef {
+    return {
+      id: row.id, name: row.name, size: row.size, charCount: row.charCount,
+      images: parseJsonSafe<string[]>(row.images, []),
+      skippedImages: row.skippedImages, truncated: Boolean(row.truncated),
+      excerpt: row.text.replace(/\s+/g, " ").trim().slice(0, 180),
+    };
+  }
+
   private formatMessage(row: AgentMessageRow, identity: Owner) {
     const cards = parseJsonSafe<AgentCard[]>(row.cards, []);
     return {
@@ -646,6 +702,8 @@ export class AgentService {
       content: row.content,
       reasoning: row.reasoning,
       attachments: parseJsonSafe<string[]>(row.attachments, []),
+      documents: this.getDocuments(parseJsonSafe<string[]>(row.documents, []), identity.id)
+        .map((document) => this.formatDocument(document)),
       cards: this.hydrateCards(cards, identity),
       createdAt: row.createdAt,
     };
@@ -697,11 +755,12 @@ export class AgentService {
     attachments: string[] = [],
     cards: AgentCard[] = [],
     reasoning = "",
+    documents: string[] = [],
   ): AgentMessageRow {
     const id = randomUUID();
     const createdAt = new Date().toISOString();
     this.store.run(
-      "INSERT INTO agent_messages(id,sessionId,owner,role,content,reasoning,attachments,cards,createdAt) VALUES(?,?,?,?,?,?,?,?,?)",
+      "INSERT INTO agent_messages(id,sessionId,owner,role,content,reasoning,attachments,cards,createdAt,documents) VALUES(?,?,?,?,?,?,?,?,?,?)",
       id,
       sessionId,
       owner,
@@ -711,6 +770,7 @@ export class AgentService {
       JSON.stringify(attachments),
       JSON.stringify(cards),
       createdAt,
+      JSON.stringify(documents),
     );
     this.store.run(
       "UPDATE agent_sessions SET updatedAt=? WHERE id=?",
@@ -802,6 +862,8 @@ export class AgentService {
   private async prepareVisionDataUrl(
     assetId: string,
     owner: string,
+    maxDim = 1024,
+    quality = 82,
   ): Promise<string | null> {
     try {
       const asset = this.assets.owned(assetId, owner);
@@ -811,12 +873,12 @@ export class AgentService {
         const resized = await sharp(raw)
           .rotate()
           .resize({
-            width: 1024,
-            height: 1024,
+            width: maxDim,
+            height: maxDim,
             fit: "inside",
             withoutEnlargement: true,
           })
-          .webp({ quality: 82 })
+          .webp({ quality })
           .toBuffer();
         return `data:image/webp;base64,${resized.toString("base64")}`;
       } catch {
@@ -880,32 +942,46 @@ export class AgentService {
       },
     ];
 
-    // Keep recent 24 messages for context window hygiene; include image vision payloads only for the latest 2 user messages with attachments.
+    // Keep recent context, attaching visual payloads for the latest two image-bearing user turns.
     const recent = rows.slice(-24);
+    const userDocuments = recent.map((row) => row.role === "user"
+      ? this.getDocuments(parseJsonSafe<string[]>(row.documents, []), identity.id) : []);
+    const userImages = recent.map((row, index) => [...new Set([
+      ...parseJsonSafe<string[]>(row.attachments, []),
+      ...userDocuments[index].flatMap((doc) => parseJsonSafe<string[]>(doc.images, [])),
+    ])]);
     const userAttachmentIndices = new Set<number>();
-    let attachmentBudget = 2;
-    for (let i = recent.length - 1; i >= 0 && attachmentBudget > 0; i--) {
-      const att = parseJsonSafe<string[]>(recent[i].attachments, []);
-      if (recent[i].role === "user" && att.length) {
-        userAttachmentIndices.add(i);
-        attachmentBudget--;
-      }
+    for (let i = recent.length - 1; i >= 0 && userAttachmentIndices.size < 2; i--) {
+      if (recent[i].role === "user" && userImages[i].length) userAttachmentIndices.add(i);
     }
 
     for (let i = 0; i < recent.length; i++) {
       const row = recent[i];
       if (row.role === "user") {
-        const attachments = parseJsonSafe<string[]>(row.attachments, []);
-        const textBody = attachments.length
-          ? `${row.content || "请结合这些图片帮我构思和出图。"}\n\n[附带图片 assetIds: ${attachments.join(", ")}]`
-          : row.content;
+        const attachments = userImages[i];
+        const documents = userDocuments[i];
+        const documentText = documents.map((doc) =>
+          `[附带文档: ${doc.name}（共 ${doc.charCount} 字，包含 ${parseJsonSafe<string[]>(doc.images, []).length} 张嵌入图片）]\n${doc.text}\n[文档结束: ${doc.name}]`,
+        );
+        const textBody = [
+          row.content || (documents.length
+            ? "请完整阅读并理解附带文档中的全部文字与嵌入图片内容，再按文档意图回应或推进创作。"
+            : "请结合这些图片帮我构思和出图。"),
+          ...documentText,
+          attachments.length ? `[附带图片 assetIds: ${attachments.join(", ")}]` : "",
+          attachments.length > MAX_VISION_IMAGES_PER_MESSAGE && userAttachmentIndices.has(i)
+            ? `[图片较多，仅前 ${MAX_VISION_IMAGES_PER_MESSAGE} 张附带视觉内容，全部 assetIds 已列出。]` : "",
+        ].filter(Boolean).join("\n\n");
 
         if (attachments.length && userAttachmentIndices.has(i)) {
           const parts: Array<Record<string, unknown>> = [
             { type: "text", text: textBody },
           ];
-          for (const assetId of attachments.slice(0, 6)) {
-            const url = await this.prepareVisionDataUrl(assetId, identity.id);
+          const imageCount = Math.min(attachments.length, MAX_VISION_IMAGES_PER_MESSAGE);
+          const maxDim = imageCount <= 6 ? 1024 : imageCount <= 12 ? 768 : 640;
+          const quality = imageCount <= 6 ? 82 : imageCount <= 12 ? 78 : 74;
+          for (const assetId of attachments.slice(0, MAX_VISION_IMAGES_PER_MESSAGE)) {
+            const url = await this.prepareVisionDataUrl(assetId, identity.id, maxDim, quality);
             if (url) {
               parts.push({ type: "image_url", image_url: { url } });
             }
@@ -948,6 +1024,42 @@ export class AgentService {
     return messages;
   }
 
+  private async probeModelVisionSupport(
+    provider: ProviderRow,
+    model: string,
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    const key = JSON.stringify([provider.id, provider.baseUrl, model]);
+    const cached = this.visionProbeCache.get(key);
+    if (cached && Date.now() - cached.checkedAt < 10 * 60 * 1000) return cached.supported;
+    this.visionProbeCache.delete(key);
+    try {
+      const { response, close } = await this.providers.requestStream(provider, "/chat/completions", {
+        model,
+        messages: [{ role: "user", content: [
+          { type: "text", text: "ok" },
+          { type: "image_url", image_url: {
+            url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNgAAIAAAUAAen63NgAAAAASUVORK5CYII=",
+          } },
+        ] }],
+        max_tokens: 1,
+        stream: false,
+      }, signal);
+      try {
+        const errText = response.ok ? "" : await response.text().catch(() => "");
+        const supported = response.ok || !([400, 404, 415, 422].includes(response.status)
+          || (![401, 403, 429].includes(response.status) && response.status < 500 && isVisionUnsupportedError(errText)));
+        if (response.ok || !supported) this.visionProbeCache.set(key, { supported, checkedAt: Date.now() });
+        return supported;
+      } finally {
+        await close();
+      }
+    } catch {
+      // Network/auth/rate-limit/server failures cannot establish a lack of vision capability.
+      return true;
+    }
+  }
+
   private async callChatCompletion(
     provider: ProviderRow,
     config: AgentSessionConfig,
@@ -956,6 +1068,7 @@ export class AgentService {
       tools?: typeof AGENT_TOOLS;
       stream?: boolean;
       signal: AbortSignal;
+      requireVision?: boolean;
       onTextDelta?: (delta: string) => void;
       onReasoningDelta?: (delta: string) => void;
     },
@@ -970,7 +1083,7 @@ export class AgentService {
     let useStream = options.stream !== false;
     let stripVisionImages = false;
 
-    for (let attempt = 0; attempt < 5; attempt++) {
+    for (let attempt = 0; attempt < 7; attempt++) {
       const preparedMessages = stripVisionImages
         ? messages.map((m) => {
             if (!Array.isArray(m.content)) return m;
@@ -981,6 +1094,9 @@ export class AgentService {
             return { ...m, content: textOnly };
           })
         : messages;
+      const hasVisionParts = preparedMessages.some((message) =>
+        Array.isArray(message.content) && message.content.some((part) => part.type === "image_url"),
+      );
 
       const payload: Record<string, unknown> = {
         model: config.textModel,
@@ -1009,6 +1125,16 @@ export class AgentService {
         if (!response.ok) {
           const errText = await response.text().catch(() => "");
           const lower = errText.toLowerCase();
+          if (hasVisionParts && isVisionUnsupportedError(errText)) {
+            if (options.requireVision) {
+              this.visionProbeCache.set(JSON.stringify([provider.id, provider.baseUrl, config.textModel]), {
+                supported: false, checkedAt: Date.now(),
+              });
+              throw new VisionUnsupportedError(config.textModel);
+            }
+            stripVisionImages = true;
+            continue;
+          }
 
           // Graceful degradation when third-party OpenAI-compatible gateways reject optional params.
           if (response.status === 400 || response.status === 422) {
@@ -1030,19 +1156,16 @@ export class AgentService {
             } else if (!retried && useStream && /stream/i.test(lower)) {
               useStream = false;
               retried = true;
-            } else if (
-              !retried &&
-              !stripVisionImages &&
-              preparedMessages.some((m) => Array.isArray(m.content)) &&
-              /image|vision|multimodal|content.*string/i.test(lower)
-            ) {
-              stripVisionImages = true;
-              retried = true;
             } else if (!retried && includeTools && /tool|function/i.test(lower)) {
               includeTools = false;
               retried = true;
             }
             if (retried) continue;
+          }
+          if (hasVisionParts && options.requireVision && [400, 415, 422].includes(response.status)) {
+            if (!await this.probeModelVisionSupport(provider, config.textModel, options.signal)) {
+              throw new VisionUnsupportedError(config.textModel);
+            }
           }
 
           let detail = "";
@@ -1062,10 +1185,29 @@ export class AgentService {
               : `对话模型请求失败（HTTP ${response.status}）`,
           );
         }
+        if (hasVisionParts) {
+          this.visionProbeCache.set(JSON.stringify([provider.id, provider.baseUrl, config.textModel]), {
+            supported: true, checkedAt: Date.now(),
+          });
+        }
 
         const contentType = (response.headers.get("content-type") || "").toLowerCase();
         if (!useStream || contentType.includes("application/json")) {
           const json = object(await response.json());
+          if (json.error) {
+            const detail = typeof json.error === "string" ? json.error : JSON.stringify(json.error);
+            if (hasVisionParts && options.requireVision && isVisionUnsupportedError(detail)) {
+              this.visionProbeCache.set(JSON.stringify([provider.id, provider.baseUrl, config.textModel]), {
+                supported: false, checkedAt: Date.now(),
+              });
+              throw new VisionUnsupportedError(config.textModel);
+            }
+            if (hasVisionParts && !options.requireVision && isVisionUnsupportedError(detail)) {
+              stripVisionImages = true;
+              continue;
+            }
+            throw fail(502, `对话模型请求失败：${detail.slice(0, 200)}`);
+          }
           const choices = Array.isArray(json.choices) ? json.choices : [];
           const first = choices[0] ? object(choices[0]) : {};
           const message = first.message ? object(first.message) : {};
@@ -1128,6 +1270,16 @@ export class AgentService {
             chunk = JSON.parse(dataStr) as Record<string, unknown>;
           } catch {
             return;
+          }
+          if (chunk.error) {
+            const detail = typeof chunk.error === "string" ? chunk.error : JSON.stringify(chunk.error);
+            if (hasVisionParts && options.requireVision && isVisionUnsupportedError(detail)) {
+              this.visionProbeCache.set(JSON.stringify([provider.id, provider.baseUrl, config.textModel]), {
+                supported: false, checkedAt: Date.now(),
+              });
+              throw new VisionUnsupportedError(config.textModel);
+            }
+            throw fail(502, `对话模型请求失败：${detail.slice(0, 200)}`);
           }
           const choices = Array.isArray(chunk.choices) ? chunk.choices : [];
           const first = choices[0] ? object(choices[0]) : {};
@@ -1541,6 +1693,7 @@ export class AgentService {
       const result = await this.callChatCompletion(provider, config, reviewMessages, {
         stream: false,
         signal,
+        requireVision: true,
       });
       const parsed = extractJsonObject(result.content);
       const passed = parsed ? Boolean(parsed.passed) : true;
@@ -1615,7 +1768,11 @@ export class AgentService {
       };
     } catch (error) {
       if (signal.aborted) throw error;
-      // Graceful fallback if the text model doesn't support vision inputs.
+      const unsupported = error instanceof VisionUnsupportedError;
+      const warning = unsupported
+        ? `该模型无法理解图片（${config.textModel}），已跳过自动视觉质检`
+        : `自动视觉质检失败：${error instanceof Error ? error.message : "上游服务异常"}`;
+      this.emit(sessionId, "warning", { runId, warning });
       const card: AgentInspectionCard = {
         id: randomUUID(),
         type: "inspection",
@@ -1623,7 +1780,9 @@ export class AgentService {
         passed: true,
         degraded: true,
         summary:
-          "当前对话模型暂不支持视觉看图输入，已跳过自动质检；请直接预览上方成图并告诉我需要微调之处。",
+          unsupported
+            ? "该模型无法理解图片，已跳过自动视觉质检；请切换支持视觉输入的对话模型，或直接预览上方成图。"
+            : "自动视觉质检暂时失败，已跳过；请直接预览上方成图。",
         checks: [],
         bestAssetIds: validIds,
         inspectedAssetIds: validIds,
@@ -1636,7 +1795,7 @@ export class AgentService {
         toolResult: {
           passed: true,
           degraded: true,
-          note: "Text model does not support vision inspection; skip automatic retries and present the generated images directly to the user.",
+          note: warning,
         },
       };
     }
@@ -1667,6 +1826,15 @@ export class AgentService {
     try {
       const provider = this.providers.usable(config.textProviderId, identity);
       const llmMessages = [...initialLlmMessages];
+      const latestUser = this.store.get<AgentMessageRow>(
+        "SELECT * FROM agent_messages WHERE sessionId=? AND owner=? AND role='user' ORDER BY createdAt DESC, rowid DESC LIMIT 1",
+        sessionId, identity.id,
+      );
+      const latestUserHasImages = Boolean(latestUser && (
+        parseJsonSafe<string[]>(latestUser.attachments, []).length
+        || this.getDocuments(parseJsonSafe<string[]>(latestUser.documents, []), identity.id)
+          .some((doc) => parseJsonSafe<string[]>(doc.images, []).length > 0)
+      ));
 
       let assistantMessageId = existingAssistantMessageId;
       let assistantContent = "";
@@ -1730,6 +1898,7 @@ export class AgentService {
             tools: AGENT_TOOLS,
             stream: true,
             signal: controller.signal,
+            requireVision: latestUserHasImages,
             onReasoningDelta: (delta) => {
               assistantReasoning += delta;
               this.emit(sessionId, "reasoning_delta", {
@@ -2204,6 +2373,33 @@ export class AgentService {
   }
 
   mount(app: Express): void {
+    app.post("/api/agent/documents", async (request, response) => {
+      const identity = user(request);
+      const input = body(request);
+      if (typeof input.name !== "string" || !input.name.trim() || !/\.docx$/i.test(input.name.trim())) {
+        throw fail(400, "仅支持 Word (.docx) 文档");
+      }
+      const name = input.name.trim().split(/[\\/]/).pop()!;
+      if (typeof input.data !== "string" || !input.data.length) throw fail(400, "无效的 Word (.docx) 文档");
+      if (input.data.length > Math.ceil(MAX_DOCX_BYTES / 3) * 4) throw fail(400, "文档大小不能超过 20MB");
+      if (input.data.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(input.data)) {
+        throw fail(400, "无效的 Word (.docx) 文档");
+      }
+      const bytes = Buffer.from(input.data, "base64");
+      if (bytes.length > MAX_DOCX_BYTES) throw fail(400, "文档大小不能超过 20MB");
+      if (bytes.toString("base64") !== input.data) throw fail(400, "无效的 Word (.docx) 文档");
+      const parsed = await parseDocxDocument(bytes, (raw, mime) => this.assets.save(identity.id, raw, mime));
+      const id = randomUUID();
+      this.store.run(
+        "INSERT INTO agent_documents(id,owner,name,mime,size,text,charCount,images,skippedImages,truncated,createdAt) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+        id, identity.id, name, "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        bytes.length, parsed.text, parsed.charCount, JSON.stringify(parsed.images), parsed.skippedImages,
+        Number(parsed.truncated), new Date().toISOString(),
+      );
+      response.json({ id, name, size: bytes.length, charCount: parsed.charCount, images: parsed.images,
+        skippedImages: parsed.skippedImages, truncated: parsed.truncated, excerpt: parsed.excerpt } satisfies AgentDocumentRef);
+    });
+
     // List sessions
     app.get("/api/agent/sessions", (request, response) => {
       const identity = user(request);
@@ -2319,8 +2515,14 @@ export class AgentService {
       const attachments = Array.isArray(input.attachments)
         ? input.attachments.filter((x): x is string => typeof x === "string")
         : [];
-      if (!content && !attachments.length) {
-        throw fail(400, "请输入想法或粘贴参考图片");
+      if (input.documents !== undefined && (!Array.isArray(input.documents)
+        || input.documents.some((id) => typeof id !== "string"))) throw fail(400, "文档参数无效");
+      const documents = (input.documents ?? []) as string[];
+      if (documents.length > MAX_AGENT_DOCUMENTS) throw fail(400, `最多附带 ${MAX_AGENT_DOCUMENTS} 份文档`);
+      const documentRows = this.getDocuments(documents, identity.id);
+      if (documentRows.length !== documents.length) throw fail(404, "文档不存在");
+      if (!content && !attachments.length && !documents.length) {
+        throw fail(400, "请输入想法或附带参考图片、Word 文档");
       }
       if (content.length > 16000) {
         throw fail(400, "输入内容过长");
@@ -2390,7 +2592,7 @@ export class AgentService {
       );
       const nextTitle =
         isFirstMessage && session.title === "新创作对话"
-          ? deriveSessionTitle(content || "参考图创作")
+          ? deriveSessionTitle(content || documentRows[0]?.name || "参考图创作")
           : session.title;
       const now = new Date().toISOString();
       this.store.run(
@@ -2407,6 +2609,9 @@ export class AgentService {
         "user",
         content,
         attachments,
+        [],
+        "",
+        documents,
       );
       const userMsg = this.formatMessage(userMsgRow, identity);
       this.emit(session.id, "message", userMsg);

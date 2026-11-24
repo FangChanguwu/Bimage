@@ -14,6 +14,8 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   ImagePlus,
+  Paperclip,
+  FileText,
   Send,
   Square,
   Check,
@@ -46,6 +48,7 @@ import type {
   AgentBatchItemView,
   AgentCard,
   AgentDeliverablesCard,
+  AgentDocumentRef,
   AgentMessage,
   AgentPlanCard,
   AgentPlanItem,
@@ -104,6 +107,12 @@ const deleteTarget = ref<AgentSession | null>(null);
 
 const draft = ref("");
 const attachments = ref<string[]>([]);
+const pendingDocuments = ref<AgentDocumentRef[]>([]);
+const uploadingDocs = ref(false);
+const MAX_DOCX_BYTES = 20 * 1024 * 1024;
+const MAX_AGENT_DOCUMENTS = 4;
+let queuedDocuments = 0;
+let documentUploadQueue = Promise.resolve();
 const dragging = ref(false);
 let dragDepth = 0;
 
@@ -157,7 +166,10 @@ const canSend = computed(
     !sending.value &&
     !isRunning.value &&
     !refs.pending.value &&
-    (draft.value.trim().length > 0 || attachments.value.length > 0),
+    !uploadingDocs.value &&
+    (draft.value.trim().length > 0 ||
+      attachments.value.length > 0 ||
+      pendingDocuments.value.length > 0),
 );
 
 const refs = useReferences(
@@ -322,6 +334,15 @@ function connectEvents(sessionId: string) {
   es.addEventListener("done", () => {
     emit("jobs-changed");
     void loadSessionsList(false);
+  });
+
+  es.addEventListener("warning", (ev) => {
+    try {
+      const data = JSON.parse((ev as MessageEvent).data) as { warning?: string };
+      if (data.warning) emit("notify", data.warning, "warning");
+    } catch {
+      /* ignore */
+    }
   });
 
   es.addEventListener("error", (ev) => {
@@ -507,8 +528,9 @@ function syncConfigToSession() {
 async function sendMessage(overrideText?: string) {
   const text = (overrideText ?? draft.value).trim();
   const attached = overrideText ? [] : [...attachments.value];
-  if (!text && !attached.length) return;
-  if (sending.value || isRunning.value) return;
+  const documents = overrideText ? [] : pendingDocuments.value.map((doc) => doc.id);
+  if (!text && !attached.length && !documents.length) return;
+  if (sending.value || isRunning.value || refs.pending.value || uploadingDocs.value) return;
 
   if (!config.value.textProviderId || !config.value.textModel) {
     emit("notify", "请先在顶部选择一个对话文本模型", "warning");
@@ -530,6 +552,7 @@ async function sendMessage(overrideText?: string) {
         {
           content: text,
           attachments: attached,
+          documents,
           config: config.value,
         },
         "POST",
@@ -540,6 +563,7 @@ async function sendMessage(overrideText?: string) {
     if (!overrideText) {
       draft.value = "";
       attachments.value = [];
+      pendingDocuments.value = [];
       refs.invalidate();
       resizeTextarea();
     }
@@ -644,22 +668,97 @@ function resizeTextarea() {
   });
 }
 
-function onPaste(e: ClipboardEvent) {
-  const files = Array.from(e.clipboardData?.files || []).filter((f) =>
-    f.type.startsWith("image/"),
+function isDocxFile(file: File): boolean {
+  return (
+    file.name.toLowerCase().endsWith(".docx") ||
+    file.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
   );
-  if (files.length) {
+}
+
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(",")[1]);
+    reader.onerror = () => reject(reader.error);
+    reader.onabort = () => reject(new DOMException("Aborted", "AbortError"));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function uploadDocuments(files: File[]) {
+  const available = Math.max(
+    0,
+    MAX_AGENT_DOCUMENTS - pendingDocuments.value.length - queuedDocuments,
+  );
+  if (files.length > available) {
+    emit("notify", t("单次最多附带 {count} 个文档", { count: MAX_AGENT_DOCUMENTS }), "warning");
+    files = files.slice(0, available);
+  }
+  if (!files.length) return;
+  queuedDocuments += files.length;
+  uploadingDocs.value = true;
+  let remaining = files.length;
+  documentUploadQueue = documentUploadQueue.then(async () => {
+    try {
+      for (const file of files) {
+        if (!mounted || props.signal.aborted) break;
+        if (file.size > MAX_DOCX_BYTES) {
+          emit("notify", t("文档大小不能超过 20MB"), "warning");
+          queuedDocuments--;
+          remaining--;
+          continue;
+        }
+        const doc = await props.run(async () => {
+          const data = await fileToBase64(file);
+          return props.api<AgentDocumentRef>(
+            "/agent/documents",
+            { name: file.name, data },
+            "POST",
+            props.signal,
+          );
+        });
+        queuedDocuments--;
+        remaining--;
+        if (!mounted || props.signal.aborted) break;
+        if (!doc) continue;
+        pendingDocuments.value.push(doc);
+        emit("notify", t("已解析文档：{name}（{chars} 字，{images} 张图）", {
+          name: doc.name,
+          chars: doc.charCount,
+          images: doc.images.length,
+        }), "success");
+      }
+    } finally {
+      queuedDocuments -= remaining;
+      uploadingDocs.value = queuedDocuments > 0;
+    }
+  });
+  await documentUploadQueue;
+}
+
+function handleIncomingFiles(rawFiles: File[]) {
+  if (sending.value || isRunning.value) return;
+  const imageFiles = rawFiles.filter((file) => file.type.startsWith("image/"));
+  const docxFiles = rawFiles.filter(isDocxFile);
+  if (imageFiles.length) void props.run(() => refs.upload(imageFiles));
+  if (docxFiles.length) void uploadDocuments(docxFiles);
+  if (!imageFiles.length && !docxFiles.length && rawFiles.length) {
+    emit("notify", t("仅支持图片或 Word (.docx) 文档"), "warning");
+  }
+}
+
+function onPaste(e: ClipboardEvent) {
+  const files = Array.from(e.clipboardData?.files || []);
+  if (files.some((file) => file.type.startsWith("image/") || isDocxFile(file))) {
     e.preventDefault();
-    void props.run(() => refs.upload(files));
+    handleIncomingFiles(files);
   }
 }
 function onFileChange(e: Event) {
   const input = e.target as HTMLInputElement;
   const files = Array.from(input.files || []);
   input.value = "";
-  if (files.length) {
-    void props.run(() => refs.upload(files));
-  }
+  handleIncomingFiles(files);
 }
 
 
@@ -688,10 +787,7 @@ function onWindowDrop(e: DragEvent) {
   dragDepth = 0;
   dragging.value = false;
   if (isRunning.value) return;
-  const files = Array.from(e.dataTransfer.files || []).filter((f) =>
-    f.type.startsWith("image/"),
-  );
-  if (files.length) void props.run(() => refs.upload(files));
+  handleIncomingFiles(Array.from(e.dataTransfer.files || []));
 }
 
 function attachAssetToChat(assetId: string) {
@@ -707,6 +803,10 @@ function attachAssetToChat(assetId: string) {
 
 function removeAttachment(assetId: string) {
   attachments.value = attachments.value.filter((id) => id !== assetId);
+}
+
+function removeDocument(docId: string) {
+  pendingDocuments.value = pendingDocuments.value.filter((doc) => doc.id !== docId);
 }
 
 function openLightbox(assets: string[], startIndex: number) {
@@ -886,6 +986,10 @@ onBeforeUnmount(() => {
       'agent-dragging': dragging,
     }"
   >
+    <div v-if="dragging && !isRunning" class="agent-drop-overlay" aria-hidden="true">
+      <Paperclip :size="24" />
+      <span>{{ t("松开以上传图片或 .docx 文档") }}</span>
+    </div>
 
     <aside v-if="sidebarOpen" class="agent-sessions" :aria-label="t('对话列表')">
       <div class="agent-sessions-head">
@@ -1188,6 +1292,44 @@ onBeforeUnmount(() => {
                     :alt="t('参考图 {index}', { index: idx + 1 })"
                   />
                 </button>
+              </div>
+              <div v-if="msg.documents?.length" class="agent-msg-docs">
+                <div v-for="doc in msg.documents" :key="doc.id" class="agent-doc-card">
+                  <div class="agent-doc-head">
+                    <FileText :size="19" aria-hidden="true" />
+                    <div class="agent-doc-info">
+                      <span class="agent-doc-name" :title="doc.name">{{ doc.name }}</span>
+                      <span class="agent-doc-meta">
+                        {{ t("{chars} 字 · {images} 张图", { chars: doc.charCount, images: doc.images.length }) }}
+                      </span>
+                    </div>
+                  </div>
+                  <div v-if="doc.skippedImages || doc.truncated" class="agent-doc-warnings">
+                    <span v-if="doc.skippedImages">{{ t("跳过 {count} 张不支持格式", { count: doc.skippedImages }) }}</span>
+                    <span v-if="doc.truncated">{{ t("内容已截断") }}</span>
+                  </div>
+                  <div v-if="doc.images.length" class="agent-doc-thumbs">
+                    <button
+                      v-for="(assetId, idx) in doc.images.slice(0, 6)"
+                      :key="`${assetId}-${idx}`"
+                      type="button"
+                      class="agent-doc-thumb"
+                      :aria-label="t('文档图片 {index}', { index: idx + 1 })"
+                      @click="openLightbox(doc.images, idx)"
+                    >
+                      <AssetImage :asset="assetId" :signal="signal" :alt="t('文档图片 {index}', { index: idx + 1 })" />
+                    </button>
+                    <button
+                      v-if="doc.images.length > 6"
+                      type="button"
+                      class="agent-doc-more"
+                      :aria-label="t('文档图片 {index}', { index: 7 })"
+                      @click="openLightbox(doc.images, 6)"
+                    >
+                      +{{ doc.images.length - 6 }}
+                    </button>
+                  </div>
+                </div>
               </div>
               <p v-if="msg.content" class="agent-text">{{ msg.content }}</p>
             </div>
@@ -1625,7 +1767,7 @@ onBeforeUnmount(() => {
 
       <footer class="agent-composer">
         <div class="agent-input-box">
-          <div v-if="attachments.length" class="agent-attach-strip">
+          <div v-if="attachments.length || pendingDocuments.length" class="agent-attach-strip">
             <div
               v-for="(assetId, idx) in attachments"
               :key="assetId"
@@ -1647,6 +1789,47 @@ onBeforeUnmount(() => {
                 <X :size="12" />
               </button>
             </div>
+            <div v-for="doc in pendingDocuments" :key="doc.id" class="agent-doc-chip">
+              <div class="agent-doc-head">
+                <FileText :size="18" aria-hidden="true" />
+                <div class="agent-doc-info">
+                  <span class="agent-doc-name" :title="doc.name">{{ doc.name }}</span>
+                  <span class="agent-doc-meta">
+                    {{ t(doc.images.length ? "{chars} 字 · {images} 张图" : "{chars} 字", { chars: doc.charCount, images: doc.images.length }) }}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  class="agent-doc-remove"
+                  :title="t('移除文档')"
+                  :aria-label="`${t('移除文档')} ${doc.name}`"
+                  @click="removeDocument(doc.id)"
+                >
+                  <X :size="14" />
+                </button>
+              </div>
+              <div v-if="doc.images.length" class="agent-doc-thumbs">
+                <button
+                  v-for="(assetId, idx) in doc.images.slice(0, 4)"
+                  :key="`${assetId}-${idx}`"
+                  type="button"
+                  class="agent-doc-thumb"
+                  :aria-label="t('文档图片 {index}', { index: idx + 1 })"
+                  @click="openLightbox(doc.images, idx)"
+                >
+                  <AssetImage :asset="assetId" :signal="signal" :alt="t('文档图片 {index}', { index: idx + 1 })" />
+                </button>
+                <button
+                  v-if="doc.images.length > 4"
+                  type="button"
+                  class="agent-doc-more"
+                  :aria-label="t('文档图片 {index}', { index: 5 })"
+                  @click="openLightbox(doc.images, 4)"
+                >
+                  +{{ doc.images.length - 4 }}
+                </button>
+              </div>
+            </div>
           </div>
 
           <textarea
@@ -1666,7 +1849,7 @@ onBeforeUnmount(() => {
                 ref="fileInput"
                 type="file"
                 class="agent-file-input"
-                accept="image/png,image/jpeg,image/webp"
+                accept="image/png,image/jpeg,image/webp,.docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                 multiple
                 hidden
                 @change="onFileChange"
@@ -1674,13 +1857,15 @@ onBeforeUnmount(() => {
               <button
                 type="button"
                 class="icon-button agent-attach-btn"
-                :disabled="refs.pending.value || isRunning"
-                :aria-label="t('上传图片')"
+                :disabled="refs.pending.value || uploadingDocs || isRunning"
+                :title="t('上传图片或 Word 文档 (.docx)')"
+                :aria-label="t('上传图片或 Word 文档 (.docx)')"
                 @click="fileInput?.click()"
               >
-                <LoaderCircle v-if="refs.pending.value" :size="17" class="spin" />
-                <ImagePlus v-else :size="17" />
+                <LoaderCircle v-if="refs.pending.value || uploadingDocs" :size="17" class="spin" />
+                <Paperclip v-else :size="17" />
               </button>
+              <span v-if="uploadingDocs" class="agent-doc-meta" role="status">{{ t("正在解析文档…") }}</span>
             </div>
 
             <div class="agent-input-bar-right">

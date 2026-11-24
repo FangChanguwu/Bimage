@@ -50,7 +50,7 @@ export async function createApp(
       },
     }),
   );
-  app.use(express.json({ limit: "24mb" }));
+  app.use(express.json({ limit: "32mb" }));
   app.use(
     "/api",
     rateLimit({

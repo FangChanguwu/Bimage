@@ -264,6 +264,37 @@ export async function download(url: string, name: string, signal: AbortSignal) {
   }, 30000);
   assetCache(signal).trim();
 }
+async function toPngBlob(id: string, signal: AbortSignal): Promise<Blob> {
+  const cache = assetCache(signal);
+  const entry = await cache.acquire(id);
+  try {
+    let blob = entry.blob;
+    if (blob.type !== "image/png") {
+      const bitmap = await createImageBitmap(blob);
+      try {
+        if (bitmap.width * bitmap.height > 32000000)
+          throw Error("图片过大，请下载原图");
+        const c = document.createElement("canvas");
+        c.width = bitmap.width;
+        c.height = bitmap.height;
+        const ctx = c.getContext("2d");
+        if (!ctx) throw Error("图片转换失败，请下载原图");
+        ctx.drawImage(bitmap, 0, 0);
+        const png = await new Promise<Blob | null>((r) =>
+          c.toBlob(r, "image/png"),
+        );
+        if (!png) throw Error("图片转换失败，请下载原图");
+        blob = png;
+      } finally {
+        bitmap.close();
+      }
+    }
+    entry.signal.throwIfAborted();
+    return blob;
+  } finally {
+    cache.release(id);
+  }
+}
 export async function copyImage(id: string, signal: AbortSignal) {
   if (
     !window.isSecureContext ||
@@ -271,32 +302,53 @@ export async function copyImage(id: string, signal: AbortSignal) {
     !window.ClipboardItem
   )
     throw Error("当前环境不支持图片剪贴板，需要 HTTPS；请下载原图");
-  const entry = await assetCache(signal).get(id);
-  let blob = entry.blob;
-  if (blob.type !== "image/png") {
-    const bitmap = await createImageBitmap(blob);
+  signal.throwIfAborted();
+
+  let prepError: unknown;
+  const pngPromise = toPngBlob(id, signal).catch((error) => {
+    prepError = error;
+    throw error;
+  });
+  // Avoid unhandledrejection if clipboard.write fails before pngPromise settles.
+  void pngPromise.catch(() => {});
+
+  // Invoke clipboard.write synchronously inside the click gesture with a Promise<Blob>
+  // so transient user activation is preserved while fetching and converting the original image.
+  let writePromise: Promise<void> | undefined;
+  try {
+    writePromise = navigator.clipboard.write([
+      new ClipboardItem({ "image/png": pngPromise }),
+    ]);
+  } catch {
+    // Fallback for engines whose ClipboardItem only accepts a resolved Blob.
+  }
+
+  if (writePromise) {
     try {
-      if (bitmap.width * bitmap.height > 32000000)
-        throw Error("图片过大，请下载原图");
-      const c = document.createElement("canvas");
-      c.width = bitmap.width;
-      c.height = bitmap.height;
-      c.getContext("2d")!.drawImage(bitmap, 0, 0);
-      const png = await new Promise<Blob | null>((r) =>
-        c.toBlob(r, "image/png"),
-      );
-      if (!png) throw Error("图片转换失败，请下载原图");
-      blob = png;
-    } finally {
-      bitmap.close();
+      await writePromise;
+      signal.throwIfAborted();
+      return;
+    } catch (error) {
+      signal.throwIfAborted();
+      if (prepError !== undefined) throw prepError;
+      if (error instanceof DOMException && error.name === "NotAllowedError")
+        throw Error("剪贴板权限被拒绝或浏览器不支持，请下载原图");
     }
   }
-  entry.signal.throwIfAborted();
+
+  let blob: Blob;
+  try {
+    blob = await pngPromise;
+  } catch {
+    signal.throwIfAborted();
+    if (prepError !== undefined) throw prepError;
+    throw Error("图片加载失败，请重试");
+  }
+  signal.throwIfAborted();
   try {
     await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
   } catch {
     throw Error("剪贴板权限被拒绝或浏览器不支持，请下载原图");
   }
-  entry.signal.throwIfAborted();
-  assetCache(signal).trim();
+  signal.throwIfAborted();
 }

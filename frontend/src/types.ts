@@ -327,6 +327,16 @@ export type AgentCard =
   | AgentBatchCard
   | AgentInspectionCard
   | AgentDeliverablesCard;
+export interface AgentDocumentRef {
+  id: string;
+  name: string;
+  size: number;
+  charCount: number;
+  images: string[];
+  skippedImages: number;
+  truncated: boolean;
+  excerpt: string;
+}
 export interface AgentMessage {
   id: string;
   sessionId: string;
@@ -334,6 +344,7 @@ export interface AgentMessage {
   content: string;
   reasoning: string;
   attachments: string[];
+  documents?: AgentDocumentRef[];
   cards: AgentCard[];
   createdAt: string;
 }
