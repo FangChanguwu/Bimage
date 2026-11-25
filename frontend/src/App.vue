@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, watch } from "vue";
 import { Moon, Sun } from "lucide-vue-next";
-import { useSession } from "./composables/useSession";
+import { useSession, type SessionEndReason } from "./composables/useSession";
 import Workspace from "./components/Workspace.vue";
 import AuthForm from "./components/AuthForm.vue";
 import LanguageSwitch from './components/LanguageSwitch.vue';
@@ -12,15 +12,26 @@ import type { Site } from "./types";
 import { takeSetupToken } from './setup-link';
 let setupToken = takeSetupToken();
 const session = useSession();
-const { identity, pending, ready } = session;
+const { identity, pending, ready, endReason } = session;
 const notice = ref(""),
   site = ref<Site>({ title: "Bimage", icon: "/Bimage.png" }),
   theme = ref(localStorage.getItem("bimage-theme") || "light");
 const warning = ref<Notice | null>(null);
 const setupRequired = ref<boolean>();
 const checkingSetup = ref(false), setupError = ref("");
+const sessionBanner = ref<{ message: string; type: 'info' | 'warning' } | null>(null);
 let warningTimer: ReturnType<typeof setTimeout> | undefined;
 onBeforeUnmount(() => clearTimeout(warningTimer));
+
+const END_REASON_COPY: Record<Exclude<SessionEndReason, ''>, { message: string; type: 'info' | 'warning' }> = {
+  expired: { message: '登录状态已过期，请重新登录。', type: 'warning' },
+  switched: { message: '检测到账号会话已变更，请重新登录。', type: 'warning' },
+  other_tab: { message: '已在其他标签页退出或切换账号，请重新登录。', type: 'warning' },
+  logout: { message: '已退出登录。', type: 'info' },
+};
+watch(endReason, (reason) => {
+  sessionBanner.value = reason ? END_REASON_COPY[reason] : null;
+}, { immediate: true });
 watch(
   theme,
   (t) => {
@@ -72,6 +83,7 @@ async function authenticate(identifier: string, password: string) {
   warning.value = null;
   clearTimeout(warningTimer);
   notice.value = "";
+  session.clearEndReason();
   try {
     if (setupRequired.value) {
       if (!setupToken) throw Error('请从服务器控制台打开初始化链接。');
@@ -121,6 +133,18 @@ async function logout() {
       <h1>{{ site.title || "Bimage" }}</h1>
       <small class="login-version">v{{ version }}</small>
     </div>
+    <p
+      v-if="sessionBanner && ready"
+      class="login-session-banner"
+      :data-type="sessionBanner.type"
+      :role="sessionBanner.type === 'warning' ? 'alert' : 'status'"
+    >
+      {{ t(sessionBanner.message) }}
+    </p>
+    <div v-if="setupError && ready && setupRequired !== undefined" class="login-status login-status-inline">
+      <p role="alert">{{ t(setupError) }}</p>
+      <button type="button" :disabled="checkingSetup" @click="checkSetup">{{ t('重试') }}</button>
+    </div>
     <AuthForm
       v-if="ready && setupRequired !== undefined"
       :key="String(setupRequired)"
@@ -129,11 +153,11 @@ async function logout() {
       :pending="pending || checkingSetup"
       :error="notice"
       @submit="authenticate"
-      @edit="notice = ''"
+      @edit="notice = ''; session.clearEndReason()"
     />
     <div v-else-if="setupError" class="login-status">
       <p role="alert">{{ t(setupError) }}</p>
-      <button type="button" @click="checkSetup">{{ t('重试') }}</button>
+      <button type="button" :disabled="checkingSetup" @click="checkSetup">{{ t('重试') }}</button>
     </div>
     <p v-else class="muted" role="status">{{ t('正在连接…') }}</p>
   </main>

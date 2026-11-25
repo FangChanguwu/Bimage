@@ -11,10 +11,11 @@ const emit = defineEmits<{ created: [] }>();
 const directory = ref<AccountDirectory>();
 const loading = ref(false), loadError = ref('');
 const creating = ref(false), saving = ref(false), createError = ref('');
+const createModal = ref<InstanceType<typeof Modal> | null>(null);
 const email = ref(''), name = ref(''), password = ref(''), role = ref<AccountRole>('user'), concurrency = ref('1');
+const createDirty = computed(() => Boolean(email.value.trim() || password.value || name.value.trim() || role.value !== 'user' || concurrency.value !== '1'));
 const roles = computed(() => [{ value: 'user', label: t('用户') }, { value: 'admin', label: t('管理员') }]);
 const limits = Array.from({ length: 8 }, (_, i) => ({ value: String(i + 1), label: String(i + 1) }));
-
 async function load() {
   if (loading.value) return;
   loadError.value = '';
@@ -89,7 +90,7 @@ async function create() {
       </ul>
       <p v-else class="muted">{{ t('尚无用户。') }}</p>
     </section>
-    <Modal v-if="creating" :title="t('创建用户')" :locked="saving" @close="close">
+    <Modal v-if="creating" ref="createModal" :title="t('创建用户')" :locked="saving" :dirty="createDirty" @close="close">
       <form class="account-form" :aria-busy="saving" @submit.prevent="create" @input="createError = ''">
         <fieldset :disabled="saving">
           <label>{{ t('邮箱') }}<input v-model="email" name="email" type="email" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="254" required autofocus /></label>
@@ -109,7 +110,7 @@ async function create() {
           <small class="account-hint">{{ t('可同时执行的图像请求数，范围为 1–8。') }}</small>
           <p v-if="createError" class="error-message" role="alert">{{ t(createError) }}</p>
           <footer class="form-footer">
-            <button type="button" @click="close">{{ t('取消') }}</button>
+            <button type="button" @click="createModal?.requestClose()">{{ t('取消') }}</button>
             <button type="submit" class="primary">{{ t(saving ? '正在创建…' : '创建用户') }}</button>
           </footer>
         </fieldset>

@@ -6,7 +6,7 @@ const VERSION = 2;
 const MAX_ENTRIES = 2048;
 const MAX_BYTES = 128 * 1024 * 1024;
 interface StoredAsset { key: string; owner: string; asset: string; size: number; touched: number }
-export interface CacheUsage { bytes: number; count: number; limit: number }
+export interface CacheUsage { bytes: number; count: number; limit: number; available: boolean }
 const key = (owner: string, asset: string, variant: AssetVariant) => JSON.stringify([owner, asset, variant, VERSION]);
 let dbPromise: Promise<IDBDatabase> | undefined;
 function database(): Promise<IDBDatabase> {
@@ -162,14 +162,14 @@ export async function clearAllPersistentAssets() {
     };
   });
 }
-export async function clearPersistentAssets(owner: string, asset?: string) {
-  await transact("readwrite", undefined, (tx) => {
+export async function clearPersistentAssets(owner: string, asset?: string): Promise<boolean> {
+  return transact<boolean>("readwrite", false, (tx, done) => {
     const epochs = tx.objectStore("epochs"), current = epochs.get(owner);
     current.onsuccess = () => epochs.put((current.result || 0) + 1, owner);
     const store = tx.objectStore("metadata"), request = store.openCursor();
     request.onsuccess = () => {
       const cursor = request.result;
-      if (!cursor) return;
+      if (!cursor) { done(true); return; }
       const row = cursor.value as StoredAsset;
       if (row.owner === owner && (asset === undefined || row.asset === asset)) { tx.objectStore("assets").delete(row.key); cursor.delete(); }
       cursor.continue();
@@ -177,11 +177,11 @@ export async function clearPersistentAssets(owner: string, asset?: string) {
   });
 }
 export async function persistentAssetUsage(owner: string): Promise<CacheUsage> {
-  return transact("readonly", { bytes: 0, count: 0, limit: MAX_BYTES }, (tx, done) => {
+  return transact<CacheUsage>("readonly", { bytes: 0, count: 0, limit: MAX_BYTES, available: false }, (tx, done) => {
     const request = tx.objectStore("metadata").getAll();
     request.onsuccess = () => {
       const rows = (request.result as StoredAsset[]).filter(row => row.owner === owner);
-      done({ bytes: rows.reduce((sum, row) => sum + row.size, 0), count: rows.length, limit: MAX_BYTES });
+      done({ bytes: rows.reduce((sum, row) => sum + row.size, 0), count: rows.length, limit: MAX_BYTES, available: true });
     };
   });
 }

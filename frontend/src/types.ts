@@ -18,6 +18,8 @@ export interface ProviderDraft {
   name: string;
   baseUrl: string;
   apiKey: string;
+  clearApiKey?: boolean;
+  reuseApiKey?: boolean;
   models: Model[];
   shared: boolean;
   kind: "mixed";

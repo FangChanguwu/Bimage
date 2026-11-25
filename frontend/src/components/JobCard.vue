@@ -225,7 +225,7 @@ async function deleteJob() {
       >
         <Download :size="15" />{{ t('下载') }}</button
       ><button :title="t('仅恢复完整参数，不自动生成')" @click="emit('restore')">
-        <RotateCcw :size="15" />{{ t('重试') }}</button
+        <RotateCcw :size="15" />{{ t('恢复参数') }}</button
       ><button :disabled="!success.length" @click="repairing = true">
         <Paintbrush :size="15" />{{ t('局部修复') }}</button
       ><button
@@ -300,7 +300,7 @@ async function deleteJob() {
       can-use-as-reference
       :is-favorite="(id) => favoriteAssets.has(id)"
       @toggle-favorite="toggleFavoriteByAsset"
-      @use-as-reference="(id) => emit('useAsReference', id)"
+      @use-as-reference="(id) => { previewIndex = null; emit('useAsReference', id); }"
       @close="previewIndex = null"
     /><RepairEditor
       v-if="repairing"

@@ -42,9 +42,13 @@ function move(delta: number) {
 }
 function keydown(e: KeyboardEvent) {
   if (props.disabled) return;
-  if (['ArrowDown', 'ArrowUp', 'Home', 'End', 'Enter', ' ', 'Escape'].includes(e.key)) {
+  if (e.key === 'Escape') {
+    if (!open.value) return;
     e.preventDefault(); e.stopPropagation();
-    if (e.key === 'Escape') { close(); return; }
+    close(); return;
+  }
+  if (['ArrowDown', 'ArrowUp', 'Home', 'End', 'Enter', ' '].includes(e.key)) {
+    e.preventDefault(); e.stopPropagation();
     if (e.key === 'Enter' || e.key === ' ') { if (open.value) choose(active.value); else show(); return; }
     const wasOpen = open.value; if (!wasOpen) show();
     if (e.key === 'Home') highlight(props.options.findIndex(o => !o.disabled));

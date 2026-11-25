@@ -1,3 +1,19 @@
+<script lang="ts">
+import type { AgentDocumentRef as StoredDocument, AgentPlanItem as StoredPlanItem } from "../types";
+
+interface SessionDraft {
+  draft: string;
+  attachments: string[];
+  pendingDocuments: StoredDocument[];
+  planDrafts: Record<string, StoredPlanItem[]>;
+  revision: number;
+}
+const sessionDraftStore = new Map<string, SessionDraft>();
+let lastSelectedSessionId = "";
+let composerRevision = 0;
+const draftStoreSignals = new WeakSet<AbortSignal>();
+</script>
+
 <script setup lang="ts">
 import {
   computed,
@@ -41,7 +57,7 @@ import Lightbox from "./Lightbox.vue";
 import Modal from "./Modal.vue";
 import { useReferences } from "../composables/useReferences";
 import { resolveTextDefaults } from "../composables/textDefaults";
-import { copyImage, download } from "../composables/assetCache";
+import { copyImage, download, extensionForMime } from "../composables/assetCache";
 import { t, formatDate } from "../i18n";
 import type {
   AgentBatchCard,
@@ -99,6 +115,11 @@ const messages = ref<AgentMessage[]>([]);
 const activeRun = ref<AgentRun | null>(null);
 const loadingSessions = ref(true);
 const loadingDetail = ref(false);
+const detailError = ref("");
+const controlsBlocked = computed(() => loadingSessions.value || loadingDetail.value || !!detailError.value);
+const sseState = ref<"idle" | "connecting" | "open" | "reconnecting" | "disconnected">("idle");
+const isNearBottom = ref(true);
+const hasUnreadOutput = ref(false);
 const sending = ref(false);
 const approving = ref(false);
 const sidebarOpen = ref(true);
@@ -120,11 +141,61 @@ const fileInput = ref<HTMLInputElement>();
 const textareaRef = ref<HTMLTextAreaElement>();
 const threadRef = ref<HTMLElement>();
 
-const lightboxItems = ref<Array<{ asset: string; caption?: string }>>([]);
+const lightboxItems = ref<Array<{ asset: string; mime?: string }>>([]);
 const lightboxIndex = ref<number | null>(null);
 
 // Editable plan drafts keyed by plan card id
 const planDrafts = ref<Record<string, AgentPlanItem[]>>({});
+let draftRevision = ++composerRevision;
+let restoringDraft = false;
+
+function saveSessionDraft(id = currentSessionId.value) {
+  if (props.signal.aborted) return;
+  sessionDraftStore.set(id, {
+    draft: draft.value,
+    attachments: [...attachments.value],
+    pendingDocuments: JSON.parse(JSON.stringify(pendingDocuments.value)),
+    planDrafts: JSON.parse(JSON.stringify(planDrafts.value)),
+    revision: draftRevision,
+  });
+}
+
+function restoreSessionDraft(id: string) {
+  const saved = sessionDraftStore.get(id);
+  restoringDraft = true;
+  draft.value = saved?.draft ?? "";
+  attachments.value = [...(saved?.attachments ?? [])];
+  pendingDocuments.value = JSON.parse(JSON.stringify(saved?.pendingDocuments ?? []));
+  planDrafts.value = JSON.parse(JSON.stringify(saved?.planDrafts ?? {}));
+  draftRevision = saved?.revision ?? ++composerRevision;
+  restoringDraft = false;
+  resizeTextarea();
+}
+
+watch([draft, attachments, pendingDocuments], () => {
+  if (restoringDraft) return;
+  draftRevision = ++composerRevision;
+  saveSessionDraft();
+}, { deep: true, flush: "sync" });
+watch(planDrafts, () => {
+  if (!restoringDraft) saveSessionDraft();
+}, { deep: true, flush: "sync" });
+
+if (!draftStoreSignals.has(props.signal)) {
+  draftStoreSignals.add(props.signal);
+  props.signal.addEventListener("abort", () => {
+    sessionDraftStore.clear();
+    lastSelectedSessionId = "";
+  }, { once: true });
+}
+
+function onAccountAbort() {
+  closeEvents();
+  stopReconciliation();
+  clearTimeout(configSyncTimer);
+  pendingConfigSave = undefined;
+}
+props.signal.addEventListener("abort", onAccountAbort, { once: true });
 
 const textDefaults = computed(() =>
   resolveTextDefaults(props.providers, props.settings),
@@ -160,10 +231,18 @@ const isRunning = computed(() => activeRun.value?.status === "running");
 const isWaitingApproval = computed(
   () => activeRun.value?.status === "waiting_approval",
 );
+const isRunActive = computed(() => isRunning.value || isWaitingApproval.value);
+const remainingBudget = computed(() => Math.max(0,
+  (activeRun.value?.budgetImages ?? config.value.budgetImages) - (activeRun.value?.usedImages ?? 0),
+));
+const plannedTotalImages = computed(() => messages.value.reduce((total, msg) =>
+  total + msg.cards.reduce((sum, card) => sum + (card.type === "plan" && card.status === "pending"
+    ? planTotalImages(card) : 0), 0), 0));
 const hasProviders = computed(() => props.providers.length > 0);
 const canSend = computed(
   () =>
     !sending.value &&
+    !controlsBlocked.value &&
     !isRunning.value &&
     !refs.pending.value &&
     !uploadingDocs.value &&
@@ -183,16 +262,30 @@ const refs = useReferences(
 
 let eventSource: EventSource | null = null;
 let configSyncTimer: ReturnType<typeof setTimeout> | undefined;
+let pendingConfigSave: { sid: string; configSnapshot: AgentSessionConfig } | undefined;
+let configSaveQueue = Promise.resolve();
+const localConfigs = new Map<string, AgentSessionConfig>();
+let selectionRevision = 0;
+let reconcileTimer: ReturnType<typeof setTimeout> | undefined;
+let reconcileAttempts = 0;
+const reconciliationExpired = ref(false);
 let mounted = true;
 
 function closeEvents() {
+  sseState.value = "idle";
   if (eventSource) {
     eventSource.close();
     eventSource = null;
   }
 }
 
-function scrollToBottom(smooth = false) {
+function scrollToBottom(smooth = false, force = false) {
+  if (!force && !isNearBottom.value) {
+    hasUnreadOutput.value = true;
+    return;
+  }
+  isNearBottom.value = true;
+  hasUnreadOutput.value = false;
   void nextTick(() => {
     const el = threadRef.value;
     if (!el) return;
@@ -201,6 +294,75 @@ function scrollToBottom(smooth = false) {
       behavior: smooth ? "smooth" : "instant",
     });
   });
+}
+
+function onThreadScroll() {
+  const el = threadRef.value;
+  if (!el) return;
+  isNearBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+  if (isNearBottom.value) hasUnreadOutput.value = false;
+}
+
+function hasActiveBatchTasks() {
+  return messages.value.some((msg) => msg.cards.some((card) => card.type === "batch" &&
+    card.items.some((item) => item.tasks.some((task) => task.status === "queued" || task.status === "running"))));
+}
+
+function stopReconciliation() {
+  clearTimeout(reconcileTimer);
+  reconcileTimer = undefined;
+  reconcileAttempts = 0;
+  reconciliationExpired.value = false;
+}
+
+function scheduleReconciliation() {
+  if (reconcileTimer || !mounted || props.signal.aborted) return;
+  if (activeRun.value?.status !== "cancelled" || !hasActiveBatchTasks()) return;
+  if (reconcileAttempts >= 100) {
+    reconciliationExpired.value = true;
+    return;
+  }
+  const sid = currentSessionId.value;
+  reconcileTimer = setTimeout(async () => {
+    reconcileTimer = undefined;
+    if (!mounted || currentSessionId.value !== sid) return;
+    reconcileAttempts++;
+    await refreshSessionDetail(sid);
+    if (mounted && currentSessionId.value === sid) scheduleReconciliation();
+  }, 3000);
+}
+
+function applySessionDetail(detail: AgentSessionDetail, includeConfig = false) {
+  messages.value = detail.messages;
+  activeRun.value = detail.run;
+  syncPlanDraftsFromMessages(detail.messages);
+  if (includeConfig) config.value = mergeSessionConfigWithDefaults(
+    localConfigs.get(detail.session.id) ?? detail.session.config,
+  );
+  if (!hasActiveBatchTasks()) reconciliationExpired.value = false;
+  scheduleReconciliation();
+}
+
+async function refreshSessionDetail(sid = currentSessionId.value) {
+  const revision = selectionRevision;
+  try {
+    const detail = await props.api<AgentSessionDetail>(
+      `/agent/sessions/${encodeURIComponent(sid)}`, undefined, "GET", props.signal,
+    );
+    if (!mounted || currentSessionId.value !== sid || revision !== selectionRevision) return;
+    applySessionDetail(detail);
+  } catch (error) {
+    if (mounted && !props.signal.aborted && currentSessionId.value === sid) {
+      emit("notify", t("刷新对话状态失败：{error}", { error: String(error) }), "error");
+    }
+  }
+}
+
+async function reconnectSession() {
+  if (controlsBlocked.value || !currentSessionId.value) return;
+  stopReconciliation();
+  connectEvents(currentSessionId.value);
+  await refreshSessionDetail();
 }
 
 function syncPlanDraftsFromMessages(list: AgentMessage[]) {
@@ -255,16 +417,25 @@ function connectEvents(sessionId: string) {
     `/api/agent/sessions/${encodeURIComponent(sessionId)}/events`,
   );
   eventSource = es;
+  sseState.value = "connecting";
+  let opened = false;
+  es.onopen = () => {
+    if (eventSource !== es || currentSessionId.value !== sessionId) return;
+    const reconnecting = opened || sseState.value === "reconnecting";
+    opened = true;
+    sseState.value = "open";
+    if (reconnecting) void refreshSessionDetail(sessionId);
+  };
+  es.onerror = (ev) => {
+    if (eventSource !== es || currentSessionId.value !== sessionId || "data" in ev) return;
+    sseState.value = es.readyState === EventSource.CLOSED ? "disconnected" : "reconnecting";
+  };
 
   es.addEventListener("snapshot", (ev) => {
     try {
       const data = JSON.parse((ev as MessageEvent).data) as AgentSessionDetail;
-      if (data.session.id !== currentSessionId.value) return;
-      messages.value = data.messages;
-      activeRun.value = data.run;
-      syncPlanDraftsFromMessages(data.messages);
-      const merged = mergeSessionConfigWithDefaults(data.session.config);
-      config.value = merged;
+      if (eventSource !== es || data.session.id !== currentSessionId.value) return;
+      applySessionDetail(data);
       scrollToBottom();
     } catch {
       /* ignore */
@@ -272,6 +443,7 @@ function connectEvents(sessionId: string) {
   });
 
   es.addEventListener("message", (ev) => {
+    if (eventSource !== es || currentSessionId.value !== sessionId) return;
     try {
       const msg = JSON.parse((ev as MessageEvent).data) as AgentMessage;
       if (msg.sessionId !== currentSessionId.value) return;
@@ -282,6 +454,7 @@ function connectEvents(sessionId: string) {
   });
 
   es.addEventListener("delta", (ev) => {
+    if (eventSource !== es || currentSessionId.value !== sessionId) return;
     try {
       const { messageId, delta } = JSON.parse(
         (ev as MessageEvent).data,
@@ -297,6 +470,7 @@ function connectEvents(sessionId: string) {
   });
 
   es.addEventListener("reasoning_delta", (ev) => {
+    if (eventSource !== es || currentSessionId.value !== sessionId) return;
     try {
       const { messageId, delta } = JSON.parse(
         (ev as MessageEvent).data,
@@ -304,6 +478,7 @@ function connectEvents(sessionId: string) {
       const msg = messages.value.find((m) => m.id === messageId);
       if (msg && delta) {
         msg.reasoning += delta;
+        scrollToBottom();
       }
     } catch {
       /* ignore */
@@ -311,6 +486,7 @@ function connectEvents(sessionId: string) {
   });
 
   es.addEventListener("card", (ev) => {
+    if (eventSource !== es || currentSessionId.value !== sessionId) return;
     try {
       const { messageId, card } = JSON.parse(
         (ev as MessageEvent).data,
@@ -322,16 +498,20 @@ function connectEvents(sessionId: string) {
   });
 
   es.addEventListener("run", (ev) => {
+    if (eventSource !== es || currentSessionId.value !== sessionId) return;
     try {
       const run = JSON.parse((ev as MessageEvent).data) as AgentRun;
       if (run.sessionId !== currentSessionId.value) return;
       activeRun.value = run;
+      scheduleReconciliation();
     } catch {
       /* ignore */
     }
   });
 
   es.addEventListener("done", () => {
+    if (eventSource !== es || currentSessionId.value !== sessionId) return;
+    void refreshSessionDetail(sessionId);
     emit("jobs-changed");
     void loadSessionsList(false);
   });
@@ -383,13 +563,16 @@ async function loadSessionsList(selectFirst = true) {
     sessions.value = list;
     if (selectFirst) {
       if (list.length) {
-        await selectSession(list[0].id);
+        const restored = list.find((item) => item.id === lastSelectedSessionId);
+        await selectSession(restored?.id ?? list[0].id);
       } else {
         currentSessionId.value = "";
         messages.value = [];
         activeRun.value = null;
         config.value = buildDefaultConfig();
         closeEvents();
+        lastSelectedSessionId = "";
+        restoreSessionDraft("");
       }
     }
   } finally {
@@ -398,48 +581,77 @@ async function loadSessionsList(selectFirst = true) {
 }
 
 async function selectSession(id: string) {
-  if (currentSessionId.value === id && eventSource) return;
+  if (currentSessionId.value === id && (loadingDetail.value || (eventSource && !detailError.value))) return;
+  saveSessionDraft();
+  closeEvents();
+  stopReconciliation();
+  refs.invalidate();
+  const outgoingSave = flushConfigSave();
+  const revision = ++selectionRevision;
   currentSessionId.value = id;
+  lastSelectedSessionId = id;
   loadingDetail.value = true;
-  planDrafts.value = {};
+  detailError.value = "";
+  messages.value = [];
+  activeRun.value = null;
+  lightboxIndex.value = null;
+  restoreSessionDraft(id);
   try {
+    await outgoingSave;
+    if (!mounted || selectionRevision !== revision) return;
     const detail = await props.api<AgentSessionDetail>(
-      `/agent/sessions/${encodeURIComponent(id)}`,
-      undefined,
-      "GET",
-      props.signal,
+      `/agent/sessions/${encodeURIComponent(id)}`, undefined, "GET", props.signal,
     );
-    if (!mounted || currentSessionId.value !== id) return;
-    messages.value = detail.messages;
-    activeRun.value = detail.run;
-    config.value = mergeSessionConfigWithDefaults(detail.session.config);
-    syncPlanDraftsFromMessages(detail.messages);
+    if (!mounted || currentSessionId.value !== id || selectionRevision !== revision) return;
+    applySessionDetail(detail, true);
     connectEvents(id);
-    scrollToBottom();
+    scrollToBottom(false, true);
+  } catch (error) {
+    if (mounted && currentSessionId.value === id && selectionRevision === revision && !props.signal.aborted) {
+      detailError.value = t("加载对话失败：{error}", { error: String(error) });
+    }
   } finally {
-    if (mounted) loadingDetail.value = false;
+    if (mounted && selectionRevision === revision) loadingDetail.value = false;
   }
 }
 
-async function createNewSession(): Promise<AgentSession | undefined> {
+async function createNewSession(preserveComposer = false): Promise<AgentSession | undefined> {
+  if (controlsBlocked.value) return;
+  saveSessionDraft();
+  const originId = currentSessionId.value;
+  const revision = selectionRevision;
+  const configSnapshot = { ...config.value };
   const created = await props.run(() =>
     props.api<AgentSession>(
       "/agent/sessions",
-      { config: config.value },
+      { config: configSnapshot },
       "POST",
       props.signal,
     ),
   );
   if (!created || !mounted) return;
   sessions.value = [created, ...sessions.value.filter((s) => s.id !== created.id)];
-  currentSessionId.value = created.id;
-  messages.value = [];
-  activeRun.value = null;
-  planDrafts.value = {};
-  config.value = mergeSessionConfigWithDefaults(created.config);
-  connectEvents(created.id);
-  nextTick(() => textareaRef.value?.focus());
+  if (preserveComposer) {
+    const saved = sessionDraftStore.get(originId);
+    if (saved) sessionDraftStore.set(created.id, { ...saved, planDrafts: {} });
+  }
+  if (currentSessionId.value === originId && selectionRevision === revision) {
+    await selectSession(created.id);
+    nextTick(() => textareaRef.value?.focus());
+  }
   return created;
+}
+
+const deleteHasActiveRun = ref(false);
+let deleteRequestRevision = 0;
+async function requestDeleteSession(item: AgentSession) {
+  const revision = ++deleteRequestRevision;
+  const detail = await props.run(() => props.api<AgentSessionDetail>(
+    `/agent/sessions/${encodeURIComponent(item.id)}`, undefined, "GET", props.signal,
+  ));
+  if (!detail || !mounted || revision !== deleteRequestRevision) return;
+  deleteHasActiveRun.value = detail.run?.status === "running" || detail.run?.status === "waiting_approval";
+  deleteTarget.value = item;
 }
 
 async function confirmDeleteSession() {
@@ -447,6 +659,7 @@ async function confirmDeleteSession() {
   if (!target) return;
   deleteTarget.value = null;
   await props.run(async () => {
+    await flushConfigSave();
     await props.api(
       `/agent/sessions/${encodeURIComponent(target.id)}`,
       undefined,
@@ -454,8 +667,17 @@ async function confirmDeleteSession() {
       props.signal,
     );
     sessions.value = sessions.value.filter((s) => s.id !== target.id);
+    sessionDraftStore.delete(target.id);
+    localConfigs.delete(target.id);
     if (currentSessionId.value === target.id) {
       closeEvents();
+      stopReconciliation();
+      selectionRevision++;
+      currentSessionId.value = "";
+      lastSelectedSessionId = "";
+      restoreSessionDraft("");
+      detailError.value = "";
+      loadingDetail.value = false;
       if (sessions.value.length) {
         await selectSession(sessions.value[0].id);
       } else {
@@ -471,6 +693,7 @@ function updateConfig<K extends keyof AgentSessionConfig>(
   key: K,
   value: AgentSessionConfig[K],
 ) {
+  if (controlsBlocked.value) return;
   config.value = { ...config.value, [key]: value };
   // Persist user preferences into Settings
   const settingsPatch: Partial<Settings> = {};
@@ -491,6 +714,7 @@ function updateConfig<K extends keyof AgentSessionConfig>(
 }
 
 function onTextModelChange(providerId: string, model: string) {
+  if (controlsBlocked.value) return;
   config.value = {
     ...config.value,
     textProviderId: providerId,
@@ -501,28 +725,51 @@ function onTextModelChange(providerId: string, model: string) {
 }
 
 function onImageModelChange(providerId: string, model: string) {
+  if (controlsBlocked.value) return;
   config.value = {
     ...config.value,
     imageProviderId: providerId,
     imageModel: model,
   };
+  for (const msg of messages.value) {
+    for (const card of msg.cards) {
+      if (card.type !== "plan" || card.status !== "pending") continue;
+      for (const item of getPlanItems(card)) {
+        item.providerId = providerId;
+        item.model = model;
+      }
+    }
+  }
   syncConfigToSession();
 }
 
-function syncConfigToSession() {
-  if (!currentSessionId.value) return;
-  const sid = currentSessionId.value;
+function flushConfigSave(): Promise<void> {
   clearTimeout(configSyncTimer);
-  configSyncTimer = setTimeout(() => {
-    void props
-      .api(
-        `/agent/sessions/${encodeURIComponent(sid)}`,
-        { config: config.value },
-        "PATCH",
-        props.signal,
-      )
-      .catch(() => {});
-  }, 250);
+  configSyncTimer = undefined;
+  const pending = pendingConfigSave;
+  pendingConfigSave = undefined;
+  if (pending) {
+    configSaveQueue = configSaveQueue.then(async () => {
+      try {
+        await props.api(`/agent/sessions/${encodeURIComponent(pending.sid)}`,
+          { config: pending.configSnapshot }, "PATCH", props.signal);
+      } catch (error) {
+        if (!props.signal.aborted) emit("notify", t("保存对话设置失败：{error}", { error: String(error) }), "error");
+      }
+    });
+  }
+  return configSaveQueue;
+}
+
+function syncConfigToSession() {
+  if (!currentSessionId.value || controlsBlocked.value) return;
+  const sid = currentSessionId.value;
+  const configSnapshot = { ...config.value };
+  localConfigs.set(sid, configSnapshot);
+  if (pendingConfigSave && pendingConfigSave.sid !== sid) void flushConfigSave();
+  clearTimeout(configSyncTimer);
+  pendingConfigSave = { sid, configSnapshot };
+  configSyncTimer = setTimeout(() => { void flushConfigSave(); }, 250);
 }
 
 async function sendMessage(overrideText?: string) {
@@ -530,72 +777,107 @@ async function sendMessage(overrideText?: string) {
   const attached = overrideText ? [] : [...attachments.value];
   const documents = overrideText ? [] : pendingDocuments.value.map((doc) => doc.id);
   if (!text && !attached.length && !documents.length) return;
-  if (sending.value || isRunning.value || refs.pending.value || uploadingDocs.value) return;
+  if (controlsBlocked.value || sending.value || isRunning.value || refs.pending.value || uploadingDocs.value) return;
 
   if (!config.value.textProviderId || !config.value.textModel) {
     emit("notify", "请先在顶部选择一个对话文本模型", "warning");
     return;
   }
 
+  const capturedRevision = draftRevision;
+  const originComposerId = currentSessionId.value;
+  const configSnapshot = { ...config.value };
+  let targetSessionId = currentSessionId.value;
+  scrollToBottom(false, true);
   sending.value = true;
   try {
-    let sid = currentSessionId.value;
-    if (!sid) {
-      const created = await createNewSession();
+    if (!targetSessionId) {
+      const created = await createNewSession(true);
       if (!created) return;
-      sid = created.id;
+      targetSessionId = created.id;
     }
-
+    await flushConfigSave();
     const res = await props.run(() =>
       props.api<{ session: AgentSession; message: AgentMessage; run: AgentRun }>(
-        `/agent/sessions/${encodeURIComponent(sid)}/messages`,
+        `/agent/sessions/${encodeURIComponent(targetSessionId)}/messages`,
         {
           content: text,
           attachments: attached,
           documents,
-          config: config.value,
+          config: configSnapshot,
         },
         "POST",
         props.signal,
       ),
     );
-    if (!res || !mounted) return;
-    if (!overrideText) {
-      draft.value = "";
-      attachments.value = [];
-      pendingDocuments.value = [];
-      refs.invalidate();
-      resizeTextarea();
+    if (!res || props.signal.aborted) return;
+    if (!originComposerId && sessionDraftStore.get("")?.revision === capturedRevision) {
+      sessionDraftStore.delete("");
     }
+    if (!overrideText) {
+      if (mounted && currentSessionId.value === targetSessionId && draftRevision === capturedRevision) {
+        draft.value = "";
+        attachments.value = [];
+        pendingDocuments.value = [];
+        refs.invalidate();
+        resizeTextarea();
+      } else {
+        const saved = sessionDraftStore.get(targetSessionId);
+        if (saved?.revision === capturedRevision) {
+          sessionDraftStore.set(targetSessionId, {
+            ...saved, draft: "", attachments: [], pendingDocuments: [], revision: ++composerRevision,
+          });
+        }
+      }
+    }
+    if (!mounted) return;
     const idx = sessions.value.findIndex((s) => s.id === res.session.id);
     if (idx !== -1) {
       sessions.value[idx] = res.session;
     } else {
       sessions.value.unshift(res.session);
     }
-    upsertMessage(res.message);
-    if (!activeRun.value || activeRun.value.id !== res.run.id) {
-      activeRun.value = res.run;
+    if (currentSessionId.value === targetSessionId) {
+      upsertMessage(res.message);
+      if (!activeRun.value || activeRun.value.id !== res.run.id) activeRun.value = res.run;
+      if (!eventSource) connectEvents(targetSessionId);
+      scrollToBottom(false, true);
     }
   } finally {
     if (mounted) sending.value = false;
   }
 }
 
-function canApprovePlan(card: AgentPlanCard): boolean {
+function planBlockingReason(card: AgentPlanCard): string {
   const items = getPlanItems(card);
-  return items.length > 0 && items.every((item) => item.prompt.trim().length > 0);
+  if (!items.length || items.some((item) => !item.prompt.trim())) return t("请先填写所有组的提示词");
+  if (plannedTotalImages.value > remainingBudget.value) return t("计划总张数超出本轮剩余预算");
+  return "";
+}
+
+function canApprovePlan(card: AgentPlanCard): boolean {
+  return !controlsBlocked.value && !planBlockingReason(card);
+}
+
+function planExecutionModel(item: AgentPlanItem) {
+  const providerId = item.providerId || config.value.imageProviderId;
+  const provider = props.providers.find((entry) => entry.id === providerId);
+  return `${provider?.name || providerId} / ${item.model || config.value.imageModel}`;
 }
 
 async function handleApprove(card: AgentPlanCard, approved: boolean) {
-  if (!currentSessionId.value || approving.value) return;
+  if (controlsBlocked.value || !currentSessionId.value || approving.value) return;
   if (approved && !canApprovePlan(card)) return;
   const editedItems = planDrafts.value[card.id] ?? card.items;
+  const sid = currentSessionId.value;
+  const revision = selectionRevision;
+  await flushConfigSave();
+  if (!mounted || currentSessionId.value !== sid || selectionRevision !== revision || controlsBlocked.value) return;
   approving.value = true;
   try {
     await props.run(() =>
       props.api(
-        `/agent/sessions/${encodeURIComponent(currentSessionId.value)}/approve`,
+        `/agent/sessions/${encodeURIComponent(sid)}/approve`,
         {
           runId: card.runId,
           approved,
@@ -611,17 +893,15 @@ async function handleApprove(card: AgentPlanCard, approved: boolean) {
 }
 
 async function stopRun() {
-  if (!currentSessionId.value) return;
-  await props.run(
-    () =>
-      props.api(
-        `/agent/sessions/${encodeURIComponent(currentSessionId.value)}/stop`,
-        {},
-        "POST",
-        props.signal,
-      ),
-    t("运行已停止"),
-  );
+  if (controlsBlocked.value || !currentSessionId.value) return;
+  const sid = currentSessionId.value;
+  await props.run(async () => {
+    await props.api(`/agent/sessions/${encodeURIComponent(sid)}/stop`, {}, "POST", props.signal);
+    if (mounted && currentSessionId.value === sid) {
+      stopReconciliation();
+      await refreshSessionDetail(sid);
+    }
+  }, t("运行已停止：排队任务已取消，已开始的生图任务可能仍会在后台完成。"));
 }
 
 function getPlanItems(card: AgentPlanCard): AgentPlanItem[] {
@@ -637,6 +917,7 @@ function planTotalImages(card: AgentPlanCard): number {
 function adjustPlanCount(cardId: string, index: number, delta: number) {
   const list = planDrafts.value[cardId];
   if (!list || !list[index]) return;
+  if (delta > 0 && plannedTotalImages.value >= remainingBudget.value) return;
   const next = Math.max(1, Math.min(8, (list[index].count || 1) + delta));
   list[index].count = next;
 }
@@ -686,6 +967,7 @@ function fileToBase64(file: File): Promise<string> {
 }
 
 async function uploadDocuments(files: File[]) {
+  const targetSessionId = currentSessionId.value;
   const available = Math.max(
     0,
     MAX_AGENT_DOCUMENTS - pendingDocuments.value.length - queuedDocuments,
@@ -721,12 +1003,23 @@ async function uploadDocuments(files: File[]) {
         remaining--;
         if (!mounted || props.signal.aborted) break;
         if (!doc) continue;
-        pendingDocuments.value.push(doc);
+        if (currentSessionId.value === targetSessionId) {
+          pendingDocuments.value.push(doc);
+        } else {
+          const saved = sessionDraftStore.get(targetSessionId);
+          if (saved) sessionDraftStore.set(targetSessionId, {
+            ...saved, pendingDocuments: [...saved.pendingDocuments, doc], revision: ++composerRevision,
+          });
+        }
+        const warnings = [
+          doc.truncated ? t("内容已截断") : "",
+          doc.skippedImages ? t("跳过 {count} 张不支持格式", { count: doc.skippedImages }) : "",
+        ].filter(Boolean);
         emit("notify", t("已解析文档：{name}（{chars} 字，{images} 张图）", {
           name: doc.name,
           chars: doc.charCount,
           images: doc.images.length,
-        }), "success");
+        }) + (warnings.length ? ` · ${warnings.join(" · ")}` : ""), warnings.length ? "warning" : "success");
       }
     } finally {
       queuedDocuments -= remaining;
@@ -737,7 +1030,7 @@ async function uploadDocuments(files: File[]) {
 }
 
 function handleIncomingFiles(rawFiles: File[]) {
-  if (sending.value || isRunning.value) return;
+  if (controlsBlocked.value || sending.value || isRunning.value) return;
   const imageFiles = rawFiles.filter((file) => file.type.startsWith("image/"));
   const docxFiles = rawFiles.filter(isDocxFile);
   if (imageFiles.length) void props.run(() => refs.upload(imageFiles));
@@ -791,6 +1084,7 @@ function onWindowDrop(e: DragEvent) {
 }
 
 function attachAssetToChat(assetId: string) {
+  if (controlsBlocked.value) return;
   if (attachments.value.includes(assetId)) return;
   if (attachments.value.length >= 16) {
     emit("notify", "参考图最多16张，请减少后重试", "warning");
@@ -810,19 +1104,36 @@ function removeDocument(docId: string) {
 }
 
 function openLightbox(assets: string[], startIndex: number) {
-  lightboxItems.value = assets.map((asset) => ({ asset }));
+  lightboxItems.value = assets.map((asset) => ({ asset, mime: assetMime(asset) }));
   lightboxIndex.value = startIndex;
+}
+
+function assetMime(asset: string): string | undefined {
+  for (const msg of messages.value) {
+    for (const card of msg.cards) {
+      if (card.type !== "batch") continue;
+      for (const item of card.items) {
+        const task = item.tasks.find((entry) => entry.asset === asset && entry.mime);
+        if (task) return task.mime;
+      }
+    }
+  }
+}
+
+function imageDownloadName(asset: string, mime = assetMime(asset)) {
+  return mime ? `${asset}.${extensionForMime(mime)}` : asset;
 }
 
 function openBatchLightbox(card: AgentBatchCard, assetId: string) {
   const all = card.items.flatMap((it) =>
-    it.tasks.filter((tk) => tk.asset).map((tk) => tk.asset as string),
+    it.tasks.filter((tk) => tk.asset).map((tk) => ({ asset: tk.asset!, mime: tk.mime })),
   );
-  const idx = Math.max(0, all.indexOf(assetId));
-  openLightbox(all, idx);
+  lightboxItems.value = all;
+  lightboxIndex.value = Math.max(0, all.findIndex((item) => item.asset === assetId));
 }
 
 function restoreItemToStudio(item: AgentBatchItemView) {
+  saveSessionDraft();
   emit("restore-form", {
     providerId: item.providerId,
     model: item.model,
@@ -959,6 +1270,7 @@ watch(
 );
 
 onMounted(() => {
+  restoreSessionDraft("");
   if (window.innerWidth <= 960) sidebarOpen.value = false;
   window.addEventListener("dragenter", onWindowDragEnter);
   window.addEventListener("dragover", onWindowDragOver);
@@ -968,8 +1280,12 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  saveSessionDraft();
+  void flushConfigSave();
+  stopReconciliation();
   mounted = false;
-  clearTimeout(configSyncTimer);
+  selectionRevision++;
+  props.signal.removeEventListener("abort", onAccountAbort);
   window.removeEventListener("dragenter", onWindowDragEnter);
   window.removeEventListener("dragover", onWindowDragOver);
   window.removeEventListener("dragleave", onWindowDragLeave);
@@ -1000,7 +1316,8 @@ onBeforeUnmount(() => {
             class="icon-button"
             :title="t('新建对话')"
             :aria-label="t('新建对话')"
-            @click="createNewSession"
+            :disabled="controlsBlocked || sending"
+            @click="createNewSession()"
           >
             <Plus :size="16" />
           </button>
@@ -1028,18 +1345,22 @@ onBeforeUnmount(() => {
           :key="item.id"
           class="agent-session-item"
           :class="{ active: item.id === currentSessionId }"
-          @click="selectSession(item.id)"
         >
-          <div class="agent-session-copy">
+          <button
+            type="button"
+            class="agent-session-select agent-session-copy"
+            :aria-current="currentSessionId === item.id ? 'true' : undefined"
+            @click="selectSession(item.id)"
+          >
             <span class="agent-session-name">{{ item.title }}</span>
             <time class="agent-session-time">{{ formatDate(item.updatedAt) }}</time>
-          </div>
+          </button>
           <button
             type="button"
             class="icon-button agent-session-delete"
             :title="t('删除对话')"
             :aria-label="t('删除对话')"
-            @click.stop="deleteTarget = item"
+            @click="requestDeleteSession(item)"
           >
             <Trash2 :size="14" />
           </button>
@@ -1049,6 +1370,11 @@ onBeforeUnmount(() => {
 
     <section class="agent-main">
       <header class="agent-toolbar">
+        <p v-if="isRunActive" class="agent-runtime-hint" role="note">
+          {{ t("当前运行中，修改将在下一轮生效") }}
+          <span v-if="isWaitingApproval">{{ t("待确认计划的生图模型例外，以计划卡片显示为准。") }}</span>
+        </p>
+        <fieldset class="agent-toolbar-controls" :disabled="controlsBlocked">
         <div class="agent-toolbar-row">
           <button
             v-if="!sidebarOpen"
@@ -1066,7 +1392,8 @@ onBeforeUnmount(() => {
             class="icon-button agent-toggle-btn"
             :title="t('新建对话')"
             :aria-label="t('新建对话')"
-            @click="createNewSession"
+            :disabled="sending"
+            @click="createNewSession()"
           >
             <Plus :size="16" />
           </button>
@@ -1193,7 +1520,7 @@ onBeforeUnmount(() => {
           </label>
 
           <label class="agent-option-number">
-            <span>{{ t("本轮预算（张）") }}</span>
+            <span>{{ t(isRunActive ? "下轮预算（张）" : "本轮预算（张）") }}</span>
             <input
               type="number"
               min="1"
@@ -1224,11 +1551,23 @@ onBeforeUnmount(() => {
             />
           </label>
         </div>
+        </fieldset>
       </header>
 
-      <div ref="threadRef" class="agent-thread">
+      <div class="agent-thread-region">
+      <div ref="threadRef" class="agent-thread" @scroll.passive="onThreadScroll">
+        <div v-if="sseState === 'reconnecting' || sseState === 'disconnected' || reconciliationExpired" class="agent-error-bar" role="status">
+          <AlertTriangle :size="14" aria-hidden="true" />
+          <span>{{ t(reconciliationExpired ? "后台任务仍未结束，请刷新状态。" : sseState === "reconnecting" ? "连接中断，正在重新连接…" : "实时连接已断开") }}</span>
+          <button type="button" @click="reconnectSession">{{ t("重新连接 / 刷新状态") }}</button>
+        </div>
         <div v-if="loadingDetail" class="agent-empty">
           <LoaderCircle :size="24" class="spin" />
+        </div>
+        <div v-else-if="detailError" class="agent-empty" role="alert">
+          <AlertTriangle :size="24" aria-hidden="true" />
+          <p>{{ detailError }}</p>
+          <button type="button" @click="selectSession(currentSessionId)">{{ t("重试") }}</button>
         </div>
 
         <div v-else-if="!messages.length" class="agent-empty">
@@ -1377,6 +1716,9 @@ onBeforeUnmount(() => {
                       </span>
                     </div>
                     <p v-if="card.summary" class="agent-card-summary">{{ card.summary }}</p>
+                    <p v-if="card.status === 'pending'" class="agent-card-summary" :class="{ 'text-danger': plannedTotalImages > remainingBudget }">
+                      {{ t("本次计划 {planned} 张 / 剩余预算 {remaining} 张", { planned: plannedTotalImages, remaining: remainingBudget }) }}
+                    </p>
 
                     <div class="agent-plan-list">
                       <div
@@ -1410,7 +1752,7 @@ onBeforeUnmount(() => {
                               <button
                                 type="button"
                                 class="icon-button"
-                                :disabled="item.count >= 8"
+                                :disabled="item.count >= 8 || plannedTotalImages >= remainingBudget"
                                 @click="adjustPlanCount(card.id, idx, 1)"
                               >
                                 +
@@ -1428,14 +1770,19 @@ onBeforeUnmount(() => {
                             </button>
                           </div>
                         </div>
+                        <p class="agent-plan-execution-model">{{ t("执行模型：{model}", { model: planExecutionModel(item) }) }}</p>
 
                         <textarea
                           v-if="card.status === 'pending'"
                           v-model="item.prompt"
                           rows="2"
                           class="agent-plan-prompt-input"
+                          :aria-label="t('提示词')"
+                          :aria-invalid="!item.prompt.trim() ? 'true' : undefined"
+                          :aria-describedby="!item.prompt.trim() ? `plan-prompt-error-${card.id}-${idx}` : undefined"
                         />
                         <p v-else class="agent-plan-prompt-text">{{ item.prompt }}</p>
+                        <p v-if="card.status === 'pending' && !item.prompt.trim()" :id="`plan-prompt-error-${card.id}-${idx}`" class="agent-validation-error">{{ t("提示词不能为空") }}</p>
 
                         <div v-if="item.references?.length" class="agent-plan-refs">
                           <button
@@ -1462,9 +1809,10 @@ onBeforeUnmount(() => {
                         <Check v-else :size="14" />
                         <span>{{ t("批准并开始生成") }}</span>
                       </button>
+                      <span v-if="planBlockingReason(card)" class="agent-validation-error" role="status">{{ planBlockingReason(card) }}</span>
                       <button
                         type="button"
-                        :disabled="approving"
+                        :disabled="approving || controlsBlocked"
                         @click="handleApprove(card, false)"
                       >
                         <X :size="14" />
@@ -1578,7 +1926,7 @@ onBeforeUnmount(() => {
                                     run(() =>
                                       download(
                                         `/api/assets/${tk.asset}`,
-                                        `agent-${tk.asset!.slice(0, 8)}.png`,
+                                        imageDownloadName(tk.asset!, tk.mime),
                                         signal,
                                       ),
                                     )
@@ -1716,7 +2064,7 @@ onBeforeUnmount(() => {
                               run(() =>
                                 download(
                                   `/api/assets/${assetId}`,
-                                  `deliverable-${idx + 1}.png`,
+                                  imageDownloadName(assetId),
                                   signal,
                                 ),
                               )
@@ -1764,6 +2112,10 @@ onBeforeUnmount(() => {
           </div>
         </template>
       </div>
+        <button v-if="!isNearBottom || hasUnreadOutput" type="button" class="agent-jump-bottom" @click="scrollToBottom(true, true)">
+          {{ t(hasUnreadOutput ? "有新动态" : "回到底部") }}
+        </button>
+      </div>
 
       <footer class="agent-composer">
         <div class="agent-input-box">
@@ -1808,6 +2160,10 @@ onBeforeUnmount(() => {
                   <X :size="14" />
                 </button>
               </div>
+              <div v-if="doc.skippedImages || doc.truncated" class="agent-doc-warnings">
+                <span v-if="doc.skippedImages">{{ t("跳过 {count} 张不支持格式", { count: doc.skippedImages }) }}</span>
+                <span v-if="doc.truncated">{{ t("内容已截断") }}</span>
+              </div>
               <div v-if="doc.images.length" class="agent-doc-thumbs">
                 <button
                   v-for="(assetId, idx) in doc.images.slice(0, 4)"
@@ -1837,6 +2193,7 @@ onBeforeUnmount(() => {
             v-model="draft"
             rows="1"
             class="agent-textarea"
+            :disabled="controlsBlocked"
             :placeholder="t('请输入内容...（Enter 发送，Shift+Enter 换行）')"
             @input="resizeTextarea"
             @keydown="onTextareaKeydown"
@@ -1857,7 +2214,7 @@ onBeforeUnmount(() => {
               <button
                 type="button"
                 class="icon-button agent-attach-btn"
-                :disabled="refs.pending.value || uploadingDocs || isRunning"
+                :disabled="controlsBlocked || refs.pending.value || uploadingDocs || isRunning"
                 :title="t('上传图片或 Word 文档 (.docx)')"
                 :aria-label="t('上传图片或 Word 文档 (.docx)')"
                 @click="fileInput?.click()"
@@ -1870,7 +2227,8 @@ onBeforeUnmount(() => {
 
             <div class="agent-input-bar-right">
               <button
-                v-if="isRunning"
+                v-if="isRunActive"
+                :disabled="controlsBlocked"
                 type="button"
                 class="agent-stop-btn"
                 :title="t('停止运行')"
@@ -1902,7 +2260,7 @@ onBeforeUnmount(() => {
       :title="t('删除对话')"
       @close="deleteTarget = null"
     >
-      <p>{{ t("删除对话后不会删除已生成的图片资产。") }}</p>
+      <p>{{ t(deleteHasActiveRun ? "此对话仍在运行。删除将停止 Agent、取消排队任务并拒绝待确认计划；已开始的生图任务可能仍会在后台完成，已生成的图片资产会保留。" : "删除对话后不会删除已生成的图片资产。") }}</p>
       <div class="modal-actions">
         <button type="button" @click="deleteTarget = null">{{ t("取消") }}</button>
         <button type="button" class="danger-btn" @click="confirmDeleteSession">
@@ -1922,3 +2280,49 @@ onBeforeUnmount(() => {
     />
   </div>
 </template>
+
+<style scoped>
+.agent-session-select {
+  flex: 1;
+  align-items: stretch;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  padding: 2px 0;
+  border-radius: 4px;
+  min-width: 0;
+}
+.agent-session-item:focus-within .agent-session-delete { opacity: 1; }
+.agent-toolbar-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.agent-thread-region { position: relative; display: flex; flex: 1; min-height: 0; }
+.agent-thread-region > .agent-thread { min-width: 0; }
+.agent-runtime-hint, .agent-plan-execution-model {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.agent-runtime-hint span { display: block; }
+.agent-validation-error { margin: 0; color: var(--danger); font-size: 12px; }
+.agent-plan-prompt-input[aria-invalid="true"] { border-color: var(--danger); }
+.agent-jump-bottom {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  flex-shrink: 0;
+  z-index: 1;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  box-shadow: 0 2px 10px color-mix(in srgb, var(--ink) 12%, transparent);
+}
+.agent-error-bar { flex-wrap: wrap; }
+</style>

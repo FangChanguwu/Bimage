@@ -66,26 +66,46 @@ export class Providers {
   async draft(
     input: Record<string, unknown>,
     old?: ProviderRow,
+    options?: { allowEmptyName?: boolean },
   ): Promise<ProviderConfig> {
-    const name = input.name ?? old?.name ?? "draft",
-      baseUrl = input.baseUrl ?? old?.baseUrl;
-    const apiKey = input.apiKey || old?.apiKey || "",
-      kind = input.kind ?? old?.kind ?? "mixed";
+    const rawName = typeof input.name === "string" ? input.name : undefined;
+    const name = options?.allowEmptyName
+      ? (rawName?.trim() ? rawName : old?.name || "draft")
+      : (input.name ?? old?.name ?? "draft");
+    const baseUrl = input.baseUrl ?? old?.baseUrl;
+    const kind = input.kind ?? old?.kind ?? "mixed";
+    const submittedKey = typeof input.apiKey === "string" ? input.apiKey : "";
+    const clearApiKey = input.clearApiKey === true;
+    const reuseApiKey = input.reuseApiKey === true;
 
     if (
       typeof name !== "string" ||
       !name.trim() ||
       typeof baseUrl !== "string" ||
-      typeof apiKey !== "string" ||
-      apiKey.length > 8192 ||
+      !baseUrl.trim() ||
+      (input.apiKey !== undefined && typeof input.apiKey !== "string") ||
+      submittedKey.length > 8192 ||
       typeof kind !== "string" ||
       !["mixed", "image", "text"].includes(kind)
     )
       throw fail(400, "供应商参数无效");
     await this.network.validate(baseUrl);
+    const normalizedUrl = baseUrl.trim().replace(/\/$/, "");
+    const oldUrl = (old?.baseUrl || "").trim().replace(/\/$/, "");
+    let apiKey = "";
+    if (submittedKey) {
+      apiKey = submittedKey;
+    } else if (clearApiKey) {
+      apiKey = "";
+    } else if (old?.apiKey) {
+      if (oldUrl && normalizedUrl !== oldUrl && !reuseApiKey) {
+        throw fail(400, "Base URL 已变更，请重新输入 API Key 或明确确认复用原密钥");
+      }
+      apiKey = old.apiKey;
+    }
     return {
-      name: name.slice(0, 100),
-      baseUrl: baseUrl.replace(/\/$/, ""),
+      name: name.trim().slice(0, 100),
+      baseUrl: normalizedUrl,
       apiKey,
       kind,
     };
@@ -116,7 +136,7 @@ export class Providers {
     app.post("/api/providers/models", limit, async (request, response) =>
       response.json({
         data: await this.discover(
-          await this.draft(body(request)),
+          await this.draft(body(request), undefined, { allowEmptyName: true }),
         ),
       }),
     );
@@ -144,7 +164,7 @@ export class Providers {
         old = this.manageable(param(request), identity);
       response.json({
         data: await this.discover(
-          await this.draft(body(request), old),
+          await this.draft(body(request), old, { allowEmptyName: true }),
         ),
       });
     });

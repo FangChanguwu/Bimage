@@ -60,11 +60,13 @@ function createCache(signal: AbortSignal, unauthorized?: () => void, options?: C
   function clearMemory() {
     for (const [id, r] of entries) drop(id, r);
   }
-  function clear() {
+  function clear(): Promise<boolean> {
     clearMemory();
     announce("clear");
-    if (options) clearing = clearing.then(() => clearPersistentAssets(options.owner));
-    return clearing;
+    if (!options) return Promise.resolve(true);
+    const result = clearing.then(() => clearPersistentAssets(options.owner));
+    clearing = result.then(() => undefined);
+    return result;
   }
   function evictMemory(id: string) {
     for (const variant of ["original", "thumbnail"] as const) {
@@ -75,11 +77,11 @@ function createCache(signal: AbortSignal, unauthorized?: () => void, options?: C
   function evict(id: string) {
     evictMemory(id);
     announce("evict", id);
-    if (options) clearing = clearing.then(() => clearPersistentAssets(options.owner, id));
+    if (options) clearing = clearing.then(() => clearPersistentAssets(options.owner, id).then(() => undefined));
     return clearing;
   }
   function usage() {
-    return options ? persistentAssetUsage(options.owner) : Promise.resolve({ bytes: 0, count: 0, limit: 128 * 1024 * 1024 });
+    return options ? persistentAssetUsage(options.owner) : Promise.resolve({ bytes: 0, count: 0, limit: 128 * 1024 * 1024, available: false });
   }
   function trim() {
     let bytes = [...entries.values()].reduce(
@@ -229,6 +231,16 @@ function createCache(signal: AbortSignal, unauthorized?: () => void, options?: C
   );
   return { get, acquire, release, peek, thumbnail, trim, evict, clear, usage };
 }
+export function extensionForMime(mime?: string): string {
+  const normalized = (mime || "").toLowerCase().split(";")[0].trim();
+  if (normalized === "image/jpeg" || normalized === "image/jpg") return "jpg";
+  if (normalized === "image/webp") return "webp";
+  if (normalized === "image/gif") return "gif";
+  if (normalized === "image/avif") return "avif";
+  if (normalized === "image/png") return "png";
+  if (normalized.startsWith("image/")) return normalized.slice(6) || "png";
+  return "png";
+}
 export async function download(url: string, name: string, signal: AbortSignal) {
   signal.throwIfAborted();
   let blob: Blob,
@@ -237,6 +249,9 @@ export async function download(url: string, name: string, signal: AbortSignal) {
     const entry = await assetCache(signal).get(url.slice(12));
     entry.signal.throwIfAborted();
     blob = entry.blob;
+    if (!/\.[a-z0-9]{2,5}$/i.test(filename)) {
+      filename = `${filename}.${extensionForMime(blob.type)}`;
+    }
   } else {
     const r = await fetch(url, { signal });
     if (!r.ok) {

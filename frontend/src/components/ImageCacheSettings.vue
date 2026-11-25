@@ -3,20 +3,37 @@ import { computed, onMounted, ref } from "vue";
 import { t } from '../i18n';
 import { assetCache } from "../composables/assetCache";
 const props = defineProps<{ signal: AbortSignal }>();
-const emit = defineEmits<{ cleared: [] }>();
-const bytes = ref(0), count = ref(0), limit = ref(128 * 1024 * 1024), busy = ref(false);
+const emit = defineEmits<{ cleared: []; error: [message: string] }>();
+const bytes = ref(0), count = ref(0), limit = ref(128 * 1024 * 1024), available = ref(true), loading = ref(true), busy = ref(false), statusError = ref("");
 const percent = computed(() => Math.min(100, limit.value > 0 ? Math.round((bytes.value / limit.value) * 1000) / 10 : 0));
 async function refresh() {
-  const usage = await assetCache(props.signal).usage();
-  if (!props.signal.aborted) { bytes.value = usage.bytes; count.value = usage.count; limit.value = usage.limit; }
+  loading.value = true;
+  try {
+    const usage = await assetCache(props.signal).usage();
+    if (!props.signal.aborted) {
+      bytes.value = usage.bytes;
+      count.value = usage.count;
+      limit.value = usage.limit;
+      available.value = usage.available;
+    }
+  } finally {
+    loading.value = false;
+  }
 }
 async function clear() {
-  if (busy.value || props.signal.aborted) return;
+  if (busy.value || props.signal.aborted || !available.value) return;
   busy.value = true;
+  statusError.value = "";
   try {
-    await assetCache(props.signal).clear();
+    const ok = await assetCache(props.signal).clear();
     await refresh();
-    if (!props.signal.aborted) emit("cleared");
+    if (props.signal.aborted) return;
+    if (!ok) {
+      statusError.value = "清除本地图片缓存失败，请检查浏览器存储权限后重试。";
+      emit("error", statusError.value);
+      return;
+    }
+    emit("cleared");
   } finally { busy.value = false; }
 }
 onMounted(refresh);
@@ -25,13 +42,18 @@ onMounted(refresh);
   <section class="image-cache-settings" :aria-label="t('本地图片缓存')">
     <div class="cache-copy">
       <h3>{{ t('本地图片缓存') }}</h3>
-      <p class="cache-stats">{{ t('已使用 {size} MB · {count} 项，最多 128 MB', { size: (bytes / 1024 / 1024).toFixed(1), count }) }}</p>
-      <div class="cache-meter" role="progressbar" :aria-valuenow="Math.round(percent)" aria-valuemin="0" aria-valuemax="100" :aria-label="t('本地图片缓存')">
-        <div class="cache-meter-fill" :style="{ width: `${percent}%` }" />
-      </div>
+      <p v-if="loading" class="cache-stats muted" role="status">{{ t('加载中…') }}</p>
+      <p v-else-if="!available" class="cache-stats error-message" role="alert">{{ t('浏览器本地缓存当前不可用（可能处于隐私模式或存储受限）。') }}</p>
+      <template v-else>
+        <p class="cache-stats">{{ t('已使用 {size} MB · {count} 项，最多 128 MB', { size: (bytes / 1024 / 1024).toFixed(1), count }) }}</p>
+        <div class="cache-meter" role="progressbar" :aria-valuenow="Math.round(percent)" aria-valuemin="0" aria-valuemax="100" :aria-label="t('本地图片缓存')">
+          <div class="cache-meter-fill" :style="{ width: `${percent}%` }" />
+        </div>
+      </template>
+      <p v-if="statusError" class="error-message" role="alert">{{ t(statusError) }}</p>
       <p>{{ t('预览缓存保存在此浏览器，刷新后可复用；每次恢复仍会联网验证权限。退出登录或切换账号时自动清除，不影响服务器原图。') }}</p>
     </div>
-    <button type="button" :disabled="busy || (count === 0 && bytes === 0)" @click="clear">{{ t(busy ? "正在清除…" : "清除图片缓存") }}</button>
+    <button type="button" :disabled="busy || loading || !available || (count === 0 && bytes === 0)" @click="clear">{{ t(busy ? "正在清除…" : "清除图片缓存") }}</button>
   </section>
 </template>
 <style scoped>

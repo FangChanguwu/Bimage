@@ -58,4 +58,12 @@ export const creationMessages: Record<string, string> = {
   '每张参考图最多8MB': 'Each reference image must be 8 MB or smaller',
   '请先在供应商设置中配置提示词优化的默认文本模型': 'Configure a default text model for prompt optimization in provider settings first',
   '文本模型未返回有效提示词': 'The text model did not return a valid prompt',
+  '恢复上一版结果': 'Restore previous result',
+  '简短意图或参考图已在生成后修改，当前结果可能与最新输入不一致。建议重新生成。': 'Intent or references changed after generating. This prompt may not match your latest inputs. Regenerate recommended.',
+  '我已知晓，仍填入此结果': 'I understand, apply this result anyway',
+  '任务已提交，但刷新任务列表失败。': 'Task submitted, but refreshing task history failed.',
+  '立即刷新': 'Refresh now',
+  '撤销恢复': 'Undo restore',
+  '撤销替换': 'Undo replace',
+  '已恢复替换前的草稿': 'Previous draft restored',
 };

@@ -17,6 +17,7 @@ import {
 } from "lucide-vue-next";
 import Composer from "./Composer.vue";
 import ToastNotice, { type Notice, type NoticeType } from './ToastNotice.vue';
+import Modal from "./Modal.vue";
 import JobCard from "./JobCard.vue";
 import QuickPrompt from "./QuickPrompt.vue";
 import SettingsPanel from "./SettingsPanel.vue";
@@ -30,6 +31,7 @@ import { t } from '../i18n';
 import { assetCache } from "../composables/assetCache";
 import { useHistory } from "../composables/useHistory";
 import { resolveTextDefaults } from "../composables/textDefaults";
+import type { PromptRun } from "../composables/promptRewrite";
 import { emptyForm, restoreForm, jobPayload, resolveChoice, MAX_REFERENCES } from "../domain";
 import type {
   Site,
@@ -56,17 +58,24 @@ const emit = defineEmits<{
   logout: [];
   site: [site: Site];
 }>();
-const page = ref<"agent" | "studio" | "favorites" | "users" | "settings">("studio"),
+type WorkspacePage = "agent" | "studio" | "favorites" | "users" | "settings";
+const page = ref<WorkspacePage>("studio"),
+  pendingPage = ref<WorkspacePage | null>(null),
+  settingsDirty = ref(false),
   providers = ref<Provider[]>([]),
   favorites = ref<FavoriteItem[]>([]),
   favoritesLoading = ref(false),
+  favoritesLoaded = ref(false),
+  favoritesError = ref(""),
   cancellingJobs = ref(new Set<string>()),
   historyHeading = ref<HTMLElement>(),
   settings = ref<Settings>({}),
   form = ref<GenerationForm>(emptyForm()),
-  notice = ref<Notice | null>(null),
+  promptReview = ref<readonly PromptRun[] | null>(null),
+  notices = ref<(Notice & { id: number; params?: Record<string, string | number>; remainingMs?: number; startedAt?: number; timer?: ReturnType<typeof setTimeout> })[]>([]),
   quick = ref(false),
   versionOpen = ref(false),
+  versionBusy = ref(false),
   versionTrigger = ref<HTMLButtonElement | null>(null),
   versionSnapshot = ref<VersionSnapshot | null>(null),
   busy = ref(false),
@@ -77,19 +86,36 @@ const displayVersion = computed(() => (isAdmin.value && versionSnapshot.value?.c
 const pageTitle = computed(() => t(({ agent: "Agent 创作", studio: "图像工作台", favorites: "收藏夹", users: "用户管理", settings: "系统设置" })[page.value]));
 const pageContext = computed(() => t(({ agent: "对话构思、批量出图与自动视觉验收。", studio: "让想法，成为画面。", favorites: "精选画面与完整创作记录。", users: "管理登录账号与图像请求权限。", settings: "连接服务，整理创作偏好。" })[page.value]));
 const favoriteAssets = computed(() => new Set(favorites.value.map((item) => item.asset)));
-const pageOrder: Record<"agent" | "studio" | "favorites" | "users" | "settings", number> = {
+const pageOrder: Record<WorkspacePage, number> = {
   agent: 0,
   studio: 1,
   favorites: 2,
   users: 3,
   settings: 4,
 };
+function navigateTo(next: WorkspacePage) {
+  if (next === page.value) return;
+  if (page.value === "settings" && settingsDirty.value) {
+    pendingPage.value = next;
+    return;
+  }
+  page.value = next;
+}
+function confirmPageLeave() {
+  if (!pendingPage.value) return;
+  settingsDirty.value = false;
+  page.value = pendingPage.value;
+  pendingPage.value = null;
+}
 const pageTransition = ref<"page-forward" | "page-backward">("page-forward");
 let pendingScrollReset = false;
 watch(page, (current, previous) => {
   if (current === previous) return;
   pageTransition.value = pageOrder[current] >= pageOrder[previous] ? "page-forward" : "page-backward";
   pendingScrollReset = true;
+  if (current === "favorites" && !favoritesLoaded.value && !favoritesLoading.value) {
+    void loadFavorites();
+  }
 });
 function updateBackToTop() {
   showBackToTop.value = page.value === "studio" && !loading.value && window.scrollY > 360;
@@ -118,8 +144,8 @@ watch(isAdmin, (allowed) => {
 });
 let active = true,
   draftVersion = 0,
+  nextNoticeId = 1,
   saveTimer: ReturnType<typeof setTimeout> | undefined,
-  noticeTimer: ReturnType<typeof setTimeout> | undefined,
   saveQueue = Promise.resolve();
 const available = computed(() =>
   providers.value.filter((p) => p.owner === props.identity.id || p.shared),
@@ -143,13 +169,85 @@ const history = useHistory(props.api, props.signal, missing => {
 });
 const { jobs, query: historyQuery, total: historyTotal, hasMore, loadingMore, searching } = history;
 const refreshHistory = history.refresh;
-const noticeParams = ref<Record<string, string | number>>({});
-const translatedNotice = computed(() => notice.value && { ...notice.value, message: t(notice.value.message, noticeParams.value) });
-function notify(message: string, type: NoticeType, options: Pick<Notice, 'action' | 'shape'> = {}) {
-  noticeParams.value = {};
-  notice.value = { message, type, ...options };
-  clearTimeout(noticeTimer);
-  if (message) noticeTimer = setTimeout(() => (notice.value = null), 6000);
+const translatedNotices = computed<Notice[]>(() =>
+  notices.value.map((item) => ({
+    id: item.id,
+    message: t(item.message, item.params),
+    type: item.type,
+    action: item.action,
+    customAction: item.customAction,
+    shape: item.shape,
+    sticky: item.sticky,
+  })),
+);
+function dismissNotice(id?: number) {
+  if (id === undefined) {
+    for (const item of notices.value) clearTimeout(item.timer);
+    notices.value = [];
+    return;
+  }
+  const idx = notices.value.findIndex((item) => item.id === id);
+  if (idx < 0) return;
+  clearTimeout(notices.value[idx].timer);
+  notices.value.splice(idx, 1);
+}
+function scheduleNotice(id: number, durationMs: number) {
+  const item = notices.value.find((entry) => entry.id === id);
+  if (!item || item.sticky) return;
+  clearTimeout(item.timer);
+  item.remainingMs = durationMs;
+  item.startedAt = Date.now();
+  item.timer = setTimeout(() => dismissNotice(id), durationMs);
+}
+function pauseNotice(id: number) {
+  const item = notices.value.find((entry) => entry.id === id);
+  if (!item || item.sticky || !item.timer) return;
+  clearTimeout(item.timer);
+  item.timer = undefined;
+  const elapsed = item.startedAt ? Date.now() - item.startedAt : 0;
+  item.remainingMs = Math.max(2000, (item.remainingMs ?? 6000) - elapsed);
+}
+function resumeNotice(id: number) {
+  const item = notices.value.find((entry) => entry.id === id);
+  if (!item || item.sticky || item.timer) return;
+  scheduleNotice(id, Math.max(2000, item.remainingMs ?? 2500));
+}
+function notify(
+  message: string,
+  type: NoticeType,
+  options: Pick<Notice, 'action' | 'customAction' | 'shape' | 'sticky'> & { params?: Record<string, string | number> } = {},
+) {
+  if (!message) return;
+  const sticky = options.sticky ?? (type === 'error' || Boolean(options.action || options.customAction));
+  const paramsKey = options.params ? JSON.stringify(options.params) : "";
+  const existing = notices.value.find(
+    (entry) =>
+      entry.message === message &&
+      (entry.params ? JSON.stringify(entry.params) : "") === paramsKey &&
+      entry.type === type &&
+      entry.action === options.action &&
+      entry.customAction?.label === options.customAction?.label,
+  );
+  if (existing) {
+    existing.sticky = sticky;
+    existing.customAction = options.customAction;
+    clearTimeout(existing.timer);
+    existing.timer = undefined;
+    if (!sticky) scheduleNotice(existing.id, 6000);
+    return;
+  }
+  const id = nextNoticeId++;
+  if (notices.value.length >= 4) {
+    const dropIdx = notices.value.findIndex((entry) => !entry.sticky);
+    const removed = notices.value.splice(dropIdx >= 0 ? dropIdx : 0, 1)[0];
+    if (removed) clearTimeout(removed.timer);
+  }
+  notices.value.push({ id, message, type, ...options, sticky });
+  if (!sticky) scheduleNotice(id, 6000);
+}
+function toggleVersionModal() {
+  if (versionOpen.value && versionBusy.value) return;
+  versionOpen.value = !versionOpen.value;
 }
 const run: Run = async (fn, success) => {
   try {
@@ -219,13 +317,17 @@ function resolveDefaults() {
 }
 async function loadFavorites() {
   favoritesLoading.value = true;
+  favoritesError.value = "";
   try {
     const res = await props.api<{ items: FavoriteItem[] }>("/favorites", undefined, "GET", props.signal);
     if (active && !props.signal.aborted) {
       favorites.value = res.items;
+      favoritesLoaded.value = true;
     }
-  } catch {
-    /* Non-fatal: favorites can be retried when opening the Favorites tab */
+  } catch (e) {
+    if (active && (e as Error).name !== "AbortError") {
+      favoritesError.value = (e as Error).message || "加载收藏夹失败，请重试";
+    }
   } finally {
     favoritesLoading.value = false;
   }
@@ -267,14 +369,13 @@ onBeforeUnmount(() => {
   window.removeEventListener("scroll", updateBackToTop);
   window.removeEventListener("resize", updateBackToTop);
   clearTimeout(saveTimer);
-  clearTimeout(noticeTimer);
+  dismissNotice();
   providers.value = [];
   jobs.value = [];
   cancellingJobs.value.clear();
   form.value = emptyForm();
   settings.value = {};
   historyQuery.value = '';
-  notice.value = null;
 });
 watch(
   [pageTitle, () => props.site.title],
@@ -282,6 +383,25 @@ watch(
     (document.title = `${props.site.title || "Bimage"} | ${pageTitle.value}`),
   { immediate: true },
 );
+function hasMeaningfulDraft(candidate: GenerationForm): boolean {
+  return Boolean(candidate.prompt.trim() || candidate.references.length || candidate.mask);
+}
+function snapshotForm(source: GenerationForm): GenerationForm {
+  return JSON.parse(JSON.stringify(toRaw(source))) as GenerationForm;
+}
+function applyQuickPrompt(prompt: string, references: string[]) {
+  const keepMask = Boolean(
+    form.value.mask &&
+    references.length > 0 &&
+    references[0] === form.value.references[0],
+  );
+  change({
+    ...form.value,
+    prompt,
+    references,
+    mask: keepMask ? form.value.mask : undefined,
+  });
+}
 async function generate() {
   if (busy.value) return;
   if (!form.value.providerId || !form.value.model) {
@@ -293,18 +413,29 @@ async function generate() {
     return;
   }
   busy.value = true;
-  const captured = JSON.parse(JSON.stringify(form.value)) as GenerationForm,
+  const captured = snapshotForm(form.value),
     version = draftVersion;
   try {
     const accepted = await run(async () => {
       await props.api<Job>("/jobs", jobPayload(captured));
       props.signal.throwIfAborted();
-      if (draftVersion === version)
+      if (draftVersion === version) {
+        promptReview.value = null;
         change({ ...form.value, prompt: "", references: [], mask: undefined });
-      await refresh();
+      }
       return true;
     });
-    if (accepted && active) notify("已将请求加入队列。", 'success', { shape: 'pill' });
+    if (!accepted || !active) return;
+    notify("已将请求加入队列。", 'success', { shape: 'pill' });
+    try {
+      await refresh();
+    } catch (e) {
+      if (active && (e as Error).name !== "AbortError") {
+        notify("任务已提交，但刷新任务列表失败。", "warning", {
+          customAction: { label: "立即刷新", run: () => void run(refresh) },
+        });
+      }
+    }
   } finally {
     busy.value = false;
   }
@@ -320,10 +451,20 @@ function restore(job: Job) {
   restoreFromForm(job.form);
 }
 function restoreFromForm(sourceForm: GenerationForm) {
+  const previous = hasMeaningfulDraft(form.value) ? snapshotForm(form.value) : null;
+  promptReview.value = null;
   change(restoreForm(toRaw(sourceForm)));
-  page.value = "studio";
+  navigateTo("studio");
   focusComposer();
-  notify("完整参数和参考图已恢复；点击生成才会提交任务", 'success');
+  notify("完整参数和参考图已恢复；点击生成才会提交任务", 'success', previous ? {
+    customAction: {
+      label: "撤销恢复",
+      run: () => {
+        change(previous);
+        notify("已恢复替换前的草稿", "success", { shape: "pill" });
+      },
+    },
+  } : {});
 }
 function addAsReference(assetId: string) {
   if (form.value.references.includes(assetId)) {
@@ -358,7 +499,7 @@ async function toggleFavorite(jobId: string, taskId: string, assetId: string) {
   }
   notify("已加入收藏夹", "success", { shape: "pill" });
 }
-async function unfavorite(assetId: string) {
+async function unfavorite(assetId: string): Promise<boolean> {
   const result = await run(() =>
     props.api<{ ok: boolean; asset: string; deletedAssetIds: string[] }>(
       "/favorites/" + encodeURIComponent(assetId),
@@ -367,11 +508,12 @@ async function unfavorite(assetId: string) {
       props.signal,
     ),
   );
-  if (!result || !active || props.signal.aborted) return;
+  if (!result || !active || props.signal.aborted) return false;
   favorites.value = favorites.value.filter((item) => item.asset !== assetId);
   const cache = assetCache(props.signal);
   for (const id of result.deletedAssetIds || []) cache.evict(id);
   notify("已取消收藏", "success", { shape: "pill" });
+  return true;
 }
 async function cancelQueued(id: string) {
   if (cancellingJobs.value.has(id) ||
@@ -387,8 +529,7 @@ async function cancelQueued(id: string) {
     // Apply the mutation's snapshot directly; an older poll must not restore queued slots.
     history.endMutation(id, job);
     if (cancelledCount > 0) {
-      notify('已取消 {count} 项排队任务。', "success");
-      noticeParams.value = { count: cancelledCount };
+      notify('已取消 {count} 项排队任务。', "success", { params: { count: cancelledCount } });
     }
     else notify("没有可取消的排队任务。", "warning");
   } finally {
@@ -418,6 +559,17 @@ async function removeJob(id: string) {
   }
 }
 function repair(job: Job, result: RepairResult) {
+  const previous = hasMeaningfulDraft(form.value) ? snapshotForm(form.value) : null;
+  promptReview.value = null;
+  const undoOption = previous ? {
+    customAction: {
+      label: "撤销替换",
+      run: () => {
+        change(previous);
+        notify("已恢复替换前的草稿", "success", { shape: "pill" });
+      },
+    },
+  } : {};
   if (result.mode === "mask") {
     change({
       ...restoreForm(toRaw(job.form)),
@@ -427,7 +579,7 @@ function repair(job: Job, result: RepairResult) {
       mask: result.maskId,
     });
     focusComposer();
-    notify("像素蒙版重绘已回填；点击生成才会提交任务", "success");
+    notify("像素蒙版重绘已回填；点击生成才会提交任务", "success", undoOption);
     return;
   }
   change({
@@ -438,7 +590,7 @@ function repair(job: Job, result: RepairResult) {
     mask: undefined,
   });
   focusComposer();
-  notify("局部修复已回填；点击生成才会提交任务", "success");
+  notify("局部修复已回填；点击生成才会提交任务", "success", undoOption);
 }
 function defaultsSaved(value: Settings) {
   settings.value = value;
@@ -467,7 +619,7 @@ function defaultsSaved(value: Settings) {
             aria-haspopup="dialog"
             :aria-expanded="versionOpen"
             :title="versionSnapshot?.hasUpdate && versionSnapshot.latest ? t('发现新版本 {tag}', { tag: versionSnapshot.latest.tag }) : t('查看版本与更新')"
-            @click="versionOpen = !versionOpen"
+            @click="toggleVersionModal"
           >
             <span>v{{ displayVersion }}</span>
             <span v-if="versionSnapshot?.hasUpdate" class="version-dot" aria-hidden="true" />
@@ -487,7 +639,7 @@ function defaultsSaved(value: Settings) {
           :aria-label="t('Agent 创作')"
           :aria-current="page === 'agent' ? 'page' : undefined"
           :class="{ selected: page === 'agent' }"
-          @click="page = 'agent'"
+          @click="navigateTo('agent')"
         >
           <Sparkles :size="18" /><span>{{ t('Agent 创作') }}</span>
         </button>
@@ -496,7 +648,7 @@ function defaultsSaved(value: Settings) {
           :aria-label="t('图像工作台')"
           :aria-current="page === 'studio' ? 'page' : undefined"
           :class="{ selected: page === 'studio' }"
-          @click="page = 'studio'"
+          @click="navigateTo('studio')"
         >
           <WandSparkles :size="18" /><span>{{ t('图像工作台') }}</span>
         </button>
@@ -505,7 +657,7 @@ function defaultsSaved(value: Settings) {
           :aria-label="t('收藏夹')"
           :aria-current="page === 'favorites' ? 'page' : undefined"
           :class="{ selected: page === 'favorites' }"
-          @click="page = 'favorites'"
+          @click="navigateTo('favorites')"
         >
           <Star :size="18" /><span>{{ t('收藏夹') }}</span>
         </button>
@@ -517,7 +669,7 @@ function defaultsSaved(value: Settings) {
           :aria-label="t('用户管理')"
           :aria-current="page === 'users' ? 'page' : undefined"
           :class="{ selected: page === 'users' }"
-          @click="page = 'users'"
+          @click="navigateTo('users')"
         >
           <UsersRound :size="18" /><span>{{ t('用户管理') }}</span>
         </button>
@@ -526,7 +678,7 @@ function defaultsSaved(value: Settings) {
           :aria-label="t('系统设置')"
           :aria-current="page === 'settings' ? 'page' : undefined"
           :class="{ selected: page === 'settings' }"
-          @click="page = 'settings'"
+          @click="navigateTo('settings')"
         >
           <SettingsIcon :size="18" /><span>{{ t('系统设置') }}</span></button
         ><button :aria-label="t('退出登录')" @click="emit('logout')">
@@ -543,7 +695,7 @@ function defaultsSaved(value: Settings) {
           </div>
         </Transition>
       </header>
-      <ToastNotice :notice="translatedNotice" @close="notice = null" @settings="page = 'settings'; notice = null" />
+      <ToastNotice :notices="translatedNotices" @close="dismissNotice" @settings="(id) => { navigateTo('settings'); dismissNotice(id); }" @pause="pauseNotice" @resume="resumeNotice" />
       <Transition :name="pageTransition" mode="out-in" @after-leave="onPageAfterLeave">
         <UserManagement v-if="page === 'users' && identity.role === 'admin'" key="users" :api="api" @created="notify('用户已创建。', 'success')" />
         <FavoritesView
@@ -551,12 +703,14 @@ function defaultsSaved(value: Settings) {
           key="favorites"
           :favorites="favorites"
           :loading="favoritesLoading || loading"
+          :error="favoritesError"
           :signal="signal"
           :run="run"
-          @unfavorite="unfavorite"
+          :unfavorite="unfavorite"
           @use-as-reference="addAsReference"
           @restore="restoreFromForm"
-          @go-studio="page = 'studio'"
+          @go-studio="navigateTo('studio')"
+          @retry="loadFavorites"
         />
         <div v-else-if="loading" key="loading" class="loading-layout" :aria-label="t('载入工作台')">
           <div />
@@ -576,7 +730,7 @@ function defaultsSaved(value: Settings) {
           @restore-form="restorePartialForm"
           @toggle-favorite="(payload) => toggleFavorite(payload.jobId, payload.taskId, payload.asset)"
           @jobs-changed="void refreshHistory()"
-          @go-settings="page = 'settings'"
+          @go-settings="navigateTo('settings')"
           @notify="(message, type) => notify(message, type)"
         />
         <div v-else-if="page === 'studio'" key="studio" class="workspace">
@@ -588,7 +742,9 @@ function defaultsSaved(value: Settings) {
           :run="run"
           :busy="busy"
           :settings="settings"
+          :review="promptReview"
           @update:form="change"
+          @update:review="(r) => (promptReview = r)"
           @generate="generate"
           @quick="quick = true"
         />
@@ -605,7 +761,7 @@ function defaultsSaved(value: Settings) {
             <Image :size="38" :stroke-width="1.3" />
             <h3>{{ t('暂无任务记录') }}</h3>
             <p>{{ t('从一句描述开始，创作会保存在这里。') }}</p>
-            <button v-if="!available.length" @click="page = 'settings'">
+            <button v-if="!available.length" @click="navigateTo('settings')">
               {{ t('去配置供应商') }}<ArrowUpRight :size="15" />
             </button>
           </div>
@@ -643,8 +799,16 @@ function defaultsSaved(value: Settings) {
           @settings="defaultsSaved"
           @site="(s) => emit('site', s)"
           @cleared="notify('图片缓存已清除', 'success')"
+          @cache-error="(m) => notify(m, 'error')"
+          @dirty-change="(d) => (settingsDirty = d)"
         />
-      </Transition><QuickPrompt
+      </Transition><Modal v-if="pendingPage" :title="t('放弃未保存的更改？')" @close="pendingPage = null">
+        <p>{{ t('系统设置中有未保存的更改，离开页面将丢失这些改动。确定放弃并离开吗？') }}</p>
+        <footer class="form-footer">
+          <button type="button" autofocus @click="pendingPage = null">{{ t('留在设置页') }}</button>
+          <button type="button" class="delete-confirm" @click="confirmPageLeave">{{ t('放弃并离开') }}</button>
+        </footer>
+      </Modal><QuickPrompt
         v-if="quick"
         :form="form"
         :settings="settings"
@@ -652,7 +816,7 @@ function defaultsSaved(value: Settings) {
         :signal="signal"
         :run="run"
         @close="quick = false"
-        @apply="(prompt, references) => change({ ...form, prompt, references })"
+        @apply="applyQuickPrompt"
       /><VersionModal
         v-if="isAdmin && versionOpen"
         :api="api"
@@ -660,9 +824,10 @@ function defaultsSaved(value: Settings) {
         :anchor="versionTrigger"
         :snapshot="versionSnapshot"
         :fallback-version="appVersion"
-        @close="versionOpen = false"
+        @close="versionOpen = false; versionBusy = false"
         @update="(s) => (versionSnapshot = s)"
         @notice="(msg, type) => notify(msg, type)"
+        @busy="(v) => (versionBusy = v)"
       />
       <Transition name="back-to-top">
         <button

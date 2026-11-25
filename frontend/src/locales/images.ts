@@ -111,4 +111,10 @@ export const imageMessages: Record<string, string> = {
   '质量': 'Quality',
   '输出格式': 'Output format',
   '宽高比': 'Aspect ratio',
+  '收藏夹加载失败': 'Failed to load Favorites',
+  '加载收藏夹失败，请重试': 'Failed to load Favorites. Try again.',
+  '确定取消收藏该图片？如果原任务已删除且无其他草稿引用，该图片将被永久删除且无法恢复。': 'Remove from Favorites? If the source job was deleted and no draft references it, this image will be permanently deleted.',
+  '确认取消收藏': 'Confirm unfavorite',
+  '处理中…': 'Processing…',
+  '当前环境不支持剪贴板写入，请手动复制提示词': 'Clipboard access is unavailable here. Please copy the prompt manually.',
 };

@@ -30,9 +30,11 @@ const props = defineProps<{
   run: Run;
   busy: boolean;
   settings: Settings;
+  review: readonly PromptRun[] | null;
 }>();
 const emit = defineEmits<{
   "update:form": [form: GenerationForm];
+  "update:review": [review: readonly PromptRun[] | null];
   generate: [];
   quick: [];
 }>();
@@ -44,17 +46,18 @@ const dragging = ref(false);
 const maskEditing = ref(false);
 let dragDepth = 0;
 const textDefaults = computed(() => resolveTextDefaults(props.providers, props.settings));
-const review = ref<readonly PromptRun[] | null>(null);
+const review = computed(() => props.review);
 const reviewValue = computed(() => review.value ? reviewText(review.value) : "");
 const revisedPrompt = computed(() => review.value ? composePrompt(review.value) : "");
 const canApply = computed(() => !!revisedPrompt.value.trim() && revisedPrompt.value.length <= PROMPT_LIMIT);
 const reviewHistory = new Map<string, readonly PromptRun[]>();
+if (props.review) reviewHistory.set(reviewText(props.review), props.review);
 let inputRange: { start: number; end: number; type: string } | undefined;
 let request: AbortController | undefined;
 function setReview(runs: readonly PromptRun[] | null) {
   reviewHistory.clear();
   inputRange = undefined;
-  review.value = runs;
+  emit("update:review", runs);
   if (runs) reviewHistory.set(reviewText(runs), runs);
 }
 function rememberRange(event: InputEvent) {
@@ -74,7 +77,7 @@ function editPrompt(event: Event) {
   const runs = (undo ? reviewHistory.get(value) : undefined)
     ?? editPromptReview(review.value, value, inputRange);
   inputRange = undefined;
-  review.value = runs;
+  emit("update:review", runs);
   reviewHistory.set(value, runs);
   if (reviewHistory.size > 64) reviewHistory.delete(reviewHistory.keys().next().value!);
 }
@@ -157,7 +160,6 @@ function promptKeydown(event: KeyboardEvent) {
 }
 function removeReference(id: string) {
   if (optimizing.value) return;
-  refs.invalidate();
   const wasFirst = props.form.references[0] === id;
   const nextRefs = props.form.references.filter(reference => reference !== id);
   const clearMask = !nextRefs.length || wasFirst;
@@ -481,6 +483,7 @@ function generationLabel(count: number) {
     <RepairEditor
       v-if="maskEditing && form.references[0]"
       :source-asset="form.references[0]"
+      :initial-mask="form.mask"
       initial-mode="mask"
       :initial-prompt="form.prompt"
       :api="api"

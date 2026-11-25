@@ -10,17 +10,31 @@ import { t } from "../i18n";
 
 type MaskOp =
   | { kind: "stroke"; tool: MaskTool; width: number; points: Point[] }
-  | { kind: "invert" };
+  | { kind: "invert" }
+  | { kind: "clear" };
+
+type AnnotationOp =
+  | { kind: "shape"; shape: Shape }
+  | { kind: "clear" };
+
+interface AssetEditHistory {
+  annotationOps: AnnotationOp[];
+  annotationRedo: AnnotationOp[];
+  maskOps: MaskOp[];
+  maskRedo: MaskOp[];
+}
 
 const props = defineProps<{
   job?: Job;
   sourceAsset?: string;
+  initialMask?: string;
   initialMode?: RepairMode;
   initialPrompt?: string;
   signal: AbortSignal;
   api: Api;
 }>();
 const emit = defineEmits<{ close: []; apply: [result: RepairResult] }>();
+const modalRef = ref<InstanceType<typeof Modal> | null>(null);
 
 const assetOptions = computed(() => {
   if (props.job) {
@@ -41,8 +55,8 @@ const asset = ref(assetOptions.value[0]?.value || "");
 const tool = ref<Tool>("pen");
 const color = ref("#EF4444");
 const width = ref(8);
-const shapes = ref<Shape[]>([]);
-const redo = ref<Shape[]>([]);
+const annotationOps = ref<AnnotationOp[]>([]);
+const annotationRedo = ref<AnnotationOp[]>([]);
 
 // Pixel mask mode state
 const maskTool = ref<MaskTool>("brush");
@@ -50,11 +64,39 @@ const maskWidth = ref(42);
 const maskOps = ref<MaskOp[]>([]);
 const maskRedo = ref<MaskOp[]>([]);
 
+const historyByAsset = new Map<string, AssetEditHistory>();
 const need = ref(props.initialPrompt ?? "");
 const error = ref("");
 const busy = ref(false);
 const ready = ref(false);
+const hasInitialMask = ref(false);
 const canvas = ref<HTMLCanvasElement>();
+
+function visibleShapes(ops: AnnotationOp[]): Shape[] {
+  let start = 0;
+  for (let i = ops.length - 1; i >= 0; i--) {
+    if (ops[i].kind === "clear") {
+      start = i + 1;
+      break;
+    }
+  }
+  const out: Shape[] = [];
+  for (let i = start; i < ops.length; i++) {
+    const op = ops[i];
+    if (op.kind === "shape") out.push(op.shape);
+  }
+  return out;
+}
+
+const activeShapes = computed(() => visibleShapes(annotationOps.value));
+const dirty = computed(() => {
+  if (need.value !== (props.initialPrompt ?? "")) return true;
+  if (maskOps.value.length > 0 || annotationOps.value.length > 0) return true;
+  for (const [id, hist] of historyByAsset.entries()) {
+    if (id !== asset.value && (hist.maskOps.length > 0 || hist.annotationOps.length > 0)) return true;
+  }
+  return false;
+});
 
 const colors = [
   "#EF4444",
@@ -80,6 +122,7 @@ const maskToolNames: Record<MaskTool, string> = {
 };
 
 let bitmap: ImageBitmap | null = null;
+let baseMaskCanvas: HTMLCanvasElement | null = null;
 let maskCanvas: HTMLCanvasElement | null = null;
 let tintCanvas: HTMLCanvasElement | null = null;
 let currentShape: Shape | null = null;
@@ -92,6 +135,7 @@ const signal = AbortSignal.any([props.signal, controller.signal]);
 onBeforeUnmount(() => {
   controller.abort();
   bitmap?.close();
+  baseMaskCanvas = null;
   maskCanvas = null;
   tintCanvas = null;
   version++;
@@ -99,21 +143,49 @@ onBeforeUnmount(() => {
 
 watch(
   asset,
-  async (id) => {
+  async (id, previousId) => {
+    if (previousId) {
+      historyByAsset.set(previousId, {
+        annotationOps: [...annotationOps.value],
+        annotationRedo: [...annotationRedo.value],
+        maskOps: [...maskOps.value],
+        maskRedo: [...maskRedo.value],
+      });
+    }
     if (!id) return;
     const v = ++version;
     ready.value = false;
-    shapes.value = [];
-    redo.value = [];
-    maskOps.value = [];
-    maskRedo.value = [];
+    const restored = historyByAsset.get(id);
+    annotationOps.value = restored ? [...restored.annotationOps] : [];
+    annotationRedo.value = restored ? [...restored.annotationRedo] : [];
+    maskOps.value = restored ? [...restored.maskOps] : [];
+    maskRedo.value = restored ? [...restored.maskRedo] : [];
+    hasInitialMask.value = false;
+    baseMaskCanvas = null;
     error.value = "";
     const cache = assetCache(props.signal);
+    const shouldLoadInitialMask = Boolean(props.initialMask && id === (props.sourceAsset || assetOptions.value[0]?.value));
+    let maskAcquired = false;
     try {
       const entry = await cache.acquire(id);
       const image = await createImageBitmap(entry.blob);
       if (v !== version || signal.aborted) {
         image.close();
+        return;
+      }
+      let initialMaskBitmap: ImageBitmap | null = null;
+      if (shouldLoadInitialMask && props.initialMask) {
+        try {
+          const maskEntry = await cache.acquire(props.initialMask);
+          maskAcquired = true;
+          initialMaskBitmap = await createImageBitmap(maskEntry.blob);
+        } catch {
+          initialMaskBitmap = null;
+        }
+      }
+      if (v !== version || signal.aborted) {
+        image.close();
+        initialMaskBitmap?.close();
         return;
       }
       bitmap?.close();
@@ -124,6 +196,20 @@ watch(
       tintCanvas = document.createElement("canvas");
       tintCanvas.width = image.width;
       tintCanvas.height = image.height;
+      if (initialMaskBitmap) {
+        const bCanvas = document.createElement("canvas");
+        bCanvas.width = image.width;
+        bCanvas.height = image.height;
+        const bctx = bCanvas.getContext("2d")!;
+        // OpenAI mask: opaque = preserve, alpha 0 = repaint. Invert alpha to get painted repaint pixels.
+        bctx.fillStyle = "#000000";
+        bctx.fillRect(0, 0, bCanvas.width, bCanvas.height);
+        bctx.globalCompositeOperation = "destination-out";
+        bctx.drawImage(initialMaskBitmap, 0, 0, bCanvas.width, bCanvas.height);
+        initialMaskBitmap.close();
+        baseMaskCanvas = bCanvas;
+        hasInitialMask.value = true;
+      }
       maskWidth.value = Math.round(Math.max(16, Math.min(96, Math.max(image.width, image.height) * 0.045)));
       await nextTick();
       if (!canvas.value) return;
@@ -136,11 +222,11 @@ watch(
         error.value = (e as Error).message;
     } finally {
       cache.release(id);
+      if (maskAcquired && props.initialMask) cache.release(props.initialMask);
     }
   },
   { immediate: true },
 );
-
 function paintAnnotation(ctx: CanvasRenderingContext2D, s: Shape) {
   const a = s.points[0];
   const b = s.points.at(-1)!;
@@ -190,7 +276,14 @@ function renderMaskLayer(ops: MaskOp[]) {
   if (!maskCanvas) return;
   const ctx = maskCanvas.getContext("2d")!;
   ctx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+  if (baseMaskCanvas) {
+    ctx.drawImage(baseMaskCanvas, 0, 0);
+  }
   for (const op of ops) {
+    if (op.kind === "clear") {
+      ctx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+      continue;
+    }
     if (op.kind === "invert") {
       ctx.save();
       ctx.globalCompositeOperation = "xor";
@@ -242,7 +335,7 @@ function redraw(extraAnnotation?: Shape, extraMask?: MaskOp) {
   ctx.clearRect(0, 0, c.width, c.height);
   ctx.drawImage(bitmap, 0, 0);
   if (mode.value === "annotation") {
-    const items = extraAnnotation ? [...shapes.value, extraAnnotation] : shapes.value;
+    const items = extraAnnotation ? [...activeShapes.value, extraAnnotation] : activeShapes.value;
     for (const shape of items) paintAnnotation(ctx, shape);
   } else if (maskCanvas && tintCanvas) {
     const ops = extraMask ? [...maskOps.value, extraMask] : maskOps.value;
@@ -259,7 +352,7 @@ function redraw(extraAnnotation?: Shape, extraMask?: MaskOp) {
   }
 }
 
-watch([mode, shapes, maskOps], () => redraw(), { deep: true });
+watch([mode, annotationOps, maskOps], () => redraw(), { deep: true });
 
 function switchMode(next: RepairMode) {
   if (busy.value || mode.value === next) return;
@@ -325,8 +418,8 @@ function finish(e: PointerEvent) {
           (p) => Math.hypot(p.x - shape.points[0].x, p.y - shape.points[0].y) >= 1,
         )
       ) {
-        shapes.value = [...shapes.value, shape];
-        redo.value = [];
+        annotationOps.value = [...annotationOps.value, { kind: "shape", shape }];
+        annotationRedo.value = [];
         error.value = "";
       }
     }
@@ -367,8 +460,8 @@ function undoStep() {
     const last = maskOps.value.pop();
     if (last) maskRedo.value.push(last);
   } else {
-    const last = shapes.value.pop();
-    if (last) redo.value.push(last);
+    const last = annotationOps.value.pop();
+    if (last) annotationRedo.value.push(last);
   }
 }
 
@@ -378,30 +471,38 @@ function redoStep() {
     const next = maskRedo.value.pop();
     if (next) maskOps.value.push(next);
   } else {
-    const next = redo.value.pop();
-    if (next) shapes.value.push(next);
+    const next = annotationRedo.value.pop();
+    if (next) annotationOps.value.push(next);
   }
 }
 
-function clearCanvas() {
-  if (busy.value) return;
+const canClear = computed(() => {
   if (mode.value === "mask") {
-    maskOps.value = [];
+    if (!hasInitialMask.value && maskOps.value.length === 0) return false;
+    return maskOps.value.at(-1)?.kind !== "clear";
+  }
+  return activeShapes.value.length > 0;
+});
+
+function clearCanvas() {
+  if (busy.value || !canClear.value) return;
+  if (mode.value === "mask") {
+    maskOps.value = [...maskOps.value, { kind: "clear" }];
     maskRedo.value = [];
   } else {
-    shapes.value = [];
-    redo.value = [];
+    annotationOps.value = [...annotationOps.value, { kind: "clear" }];
+    annotationRedo.value = [];
   }
 }
 
 const canUndo = computed(() =>
-  mode.value === "mask" ? maskOps.value.length > 0 : shapes.value.length > 0,
+  mode.value === "mask" ? maskOps.value.length > 0 : annotationOps.value.length > 0,
 );
 const canRedo = computed(() =>
-  mode.value === "mask" ? maskRedo.value.length > 0 : redo.value.length > 0,
+  mode.value === "mask" ? maskRedo.value.length > 0 : annotationRedo.value.length > 0,
 );
 const strokeCount = computed(() =>
-  mode.value === "mask" ? maskOps.value.length : shapes.value.length,
+  mode.value === "mask" ? maskOps.value.length + (hasInitialMask.value ? 1 : 0) : activeShapes.value.length,
 );
 
 function hasPaintedMaskPixels(): boolean {
@@ -416,17 +517,20 @@ function hasPaintedMaskPixels(): boolean {
 
 async function apply() {
   if (busy.value) return;
-  if (mode.value === "mask") {
+  const targetMode = mode.value;
+  const targetAsset = asset.value;
+  const targetNeed = need.value.trim();
+  if (targetMode === "mask") {
     renderMaskLayer(maskOps.value);
     if (!hasPaintedMaskPixels()) {
       error.value = "请先涂抹需要重绘的蒙版区域";
       return;
     }
-    if (!need.value.trim()) {
+    if (!targetNeed) {
       error.value = "请填写修改需求";
       return;
     }
-    if (need.value.trim().length > 16000) {
+    if (targetNeed.length > 16000) {
       error.value = "修改需求过长，请简化";
       return;
     }
@@ -457,11 +561,11 @@ async function apply() {
       signal.throwIfAborted();
       emit("apply", {
         mode: "mask",
-        imageId: asset.value,
+        imageId: targetAsset,
         maskId: result.id,
-        prompt: need.value.trim(),
+        prompt: targetNeed,
       });
-      emit("close");
+      modalRef.value?.forceClose();
     } catch (e) {
       if ((e as Error).name !== "AbortError") error.value = (e as Error).message;
     } finally {
@@ -471,12 +575,18 @@ async function apply() {
   }
 
   // Annotation mode
-  if (!shapes.value.length) {
+  const targetShapes = JSON.parse(JSON.stringify(activeShapes.value)) as Shape[];
+  if (!targetShapes.length) {
     error.value = "请先在图内添加标注";
     return;
   }
-  if (!need.value.trim()) {
+  if (!targetNeed) {
     error.value = "请填写修改需求";
+    return;
+  }
+  const prompt = repairPrompt(targetShapes, targetNeed);
+  if (prompt.length > 16000) {
+    error.value = "修改需求过长，请简化";
     return;
   }
   busy.value = true;
@@ -488,8 +598,6 @@ async function apply() {
     );
     if (!blob || blob.size > 8 * 1024 * 1024)
       throw Error("标注图超过8MB，请选择较小原图");
-    const prompt = repairPrompt(shapes.value, need.value);
-    if (prompt.length > 16000) throw Error("修改需求过长，请简化");
     signal.throwIfAborted();
     const data = await fileData(blob);
     const result = await props.api<{ id: string }>(
@@ -504,7 +612,7 @@ async function apply() {
       imageId: result.id,
       prompt,
     });
-    emit("close");
+    modalRef.value?.forceClose();
   } catch (e) {
     if ((e as Error).name !== "AbortError") error.value = (e as Error).message;
   } finally {
@@ -513,7 +621,7 @@ async function apply() {
 }
 </script>
 <template>
-  <Modal :title="t('局部修复')" wide @close="emit('close')">
+  <Modal ref="modalRef" :title="t('局部修复')" wide :locked="busy" :dirty="dirty" @close="emit('close')">
     <div class="repair-mode-switch" role="tablist" :aria-label="t('修复模式')">
       <button
         type="button"
@@ -547,7 +655,7 @@ async function apply() {
 
     <label v-if="assetOptions.length > 1">
       {{ t("选择输出图片") }}
-      <SelectControl v-model="asset" :label="t('修复图片')" :options="assetOptions" />
+      <SelectControl v-model="asset" :label="t('修复图片')" :options="assetOptions" :disabled="busy" />
     </label>
 
     <div v-if="mode === 'mask'" class="repair-toolbar">
@@ -556,6 +664,7 @@ async function apply() {
         :key="id"
         type="button"
         :aria-pressed="maskTool === id"
+        :disabled="busy"
         @click="maskTool = id"
       >
         <Eraser v-if="id === 'eraser'" :size="15" aria-hidden="true" />
@@ -563,7 +672,7 @@ async function apply() {
       </button>
       <label class="repair-width">
         {{ t("笔宽") }}
-        <input v-model.number="maskWidth" type="range" min="4" max="160" />
+        <input v-model.number="maskWidth" type="range" min="4" max="160" :disabled="busy" />
         <output>{{ maskWidth }}px</output>
       </label>
       <button
@@ -581,7 +690,7 @@ async function apply() {
       <button type="button" :aria-label="t('重做')" :disabled="!canRedo || busy" @click="redoStep">
         <Redo2 :size="16" />
       </button>
-      <button type="button" :aria-label="t('清空')" :disabled="!canUndo || busy" @click="clearCanvas">
+      <button type="button" :aria-label="t('清空')" :disabled="!canClear || busy" @click="clearCanvas">
         <Trash2 :size="16" />
       </button>
     </div>
@@ -593,13 +702,14 @@ async function apply() {
           :key="id"
           type="button"
           :aria-pressed="tool === id"
+          :disabled="busy"
           @click="tool = id"
         >
           {{ t(name) }}
         </button>
         <label class="repair-width">
           {{ t("笔宽") }}
-          <input v-model.number="width" type="range" min="2" max="48" />
+          <input v-model.number="width" type="range" min="2" max="48" :disabled="busy" />
           <output>{{ width }}px</output>
         </label>
         <button type="button" :aria-label="t('撤销')" :disabled="!canUndo || busy" @click="undoStep">
@@ -608,7 +718,7 @@ async function apply() {
         <button type="button" :aria-label="t('重做')" :disabled="!canRedo || busy" @click="redoStep">
           <Redo2 :size="16" />
         </button>
-        <button type="button" :aria-label="t('清空')" :disabled="!canUndo || busy" @click="clearCanvas">
+        <button type="button" :aria-label="t('清空')" :disabled="!canClear || busy" @click="clearCanvas">
           <Trash2 :size="16" />
         </button>
       </div>
@@ -619,11 +729,12 @@ async function apply() {
           type="button"
           :aria-label="c"
           :aria-pressed="color === c"
+          :disabled="busy"
           :style="{ background: c }"
           @click="color = c"
         />
         <code>{{ color }}</code>
-        <input v-model="color" type="color" :aria-label="t('自定义颜色')" />
+        <input v-model="color" type="color" :aria-label="t('自定义颜色')" :disabled="busy" />
       </div>
     </template>
 
@@ -643,6 +754,7 @@ async function apply() {
       <textarea
         v-model="need"
         rows="3"
+        :disabled="busy"
         :placeholder="
           mode === 'mask'
             ? t('描述蒙版区域希望重绘成什么内容，例如：将背景替换为雨夜霓虹街道…')
@@ -652,7 +764,7 @@ async function apply() {
     </label>
     <p v-if="error" role="alert" class="error-message">{{ t(error) }}</p>
     <footer class="form-footer">
-      <button type="button" @click="emit('close')">{{ t("取消") }}</button>
+      <button type="button" :disabled="busy" @click="modalRef?.requestClose()">{{ t("取消") }}</button>
       <button type="button" class="primary" :disabled="busy || !ready" @click="apply">
         {{ t(busy ? "正在保存…" : "确认回填") }}
       </button>

@@ -6,6 +6,7 @@ import { clearAllPersistentAssets } from "./persistentAssets";
 const CHANGE_KEY = "bimage-session-change";
 const CHANNEL = "bimage-session";
 const PUBLIC_PATHS = new Set(["/login", "/setup", "/site"]);
+export type SessionEndReason = "" | "expired" | "switched" | "other_tab" | "logout";
 interface Lifetime {
   controller: AbortController;
   csrf: string;
@@ -16,7 +17,8 @@ interface Lifetime {
 export function useSession() {
   const identity = ref<Identity | null>(null),
     pending = ref(false),
-    ready = ref(false);
+    ready = ref(false),
+    endReason = ref<SessionEndReason>("");
   const fresh = (): Lifetime => ({ controller: new AbortController(), csrf: "", identity: null });
   let life = fresh(), authBusy = false;
   const channel = typeof BroadcastChannel !== "undefined" ? new BroadcastChannel(CHANNEL) : null;
@@ -25,7 +27,8 @@ export function useSession() {
     channel?.postMessage("invalidate");
     try { localStorage.setItem(CHANGE_KEY, `${Date.now()}:${Math.random()}`); } catch { /* storage may be disabled */ }
   }
-  function invalidate(broadcast = false) {
+  function invalidate(broadcast = false, reason: SessionEndReason = "") {
+    const hadIdentity = Boolean(life.identity || identity.value);
     // Explicit invalidation clears disk; ordinary scope disposal only revokes URLs.
     void assetCache(life.controller.signal).clear();
     life.controller.abort();
@@ -33,10 +36,11 @@ export function useSession() {
     identity.value = null;
     pending.value = authBusy;
     ready.value = true;
+    if (hadIdentity && reason) endReason.value = reason;
     try { sessionStorage.setItem("bimage-signed-out", "true"); } catch { /* local clearing still works */ }
     if (broadcast) announce();
   }
-  function changed() { invalidate(); }
+  function changed() { invalidate(false, "other_tab"); }
   function storageChanged(event: StorageEvent) {
     if (event.key === CHANGE_KEY) changed();
   }
@@ -59,7 +63,7 @@ export function useSession() {
     signal.throwIfAborted();
     if (r.status === 401 && path === "/me" && !bound.identity) void clearAllPersistentAssets();
     if (r.status === 401 && !PUBLIC_PATHS.has(path) && bound === life && bound.identity) {
-      invalidate(true);
+      invalidate(true, "expired");
       throw Error("会话已失效，请重新登录");
     }
     const data = await r.json().catch(() => null);
@@ -74,7 +78,7 @@ export function useSession() {
         const current = await request<Identity>(bound, "/me");
         const expected = bound.identity!;
         if (current.id !== expected.id || current.role !== expected.role || current.csrf !== bound.csrf) {
-          if (bound === life) invalidate(true);
+          if (bound === life) invalidate(true, "switched");
           throw Error("会话已切换，请重新登录");
         }
       })().finally(() => { bound.checking = undefined; });
@@ -128,8 +132,9 @@ export function useSession() {
     bound.controller.signal.throwIfAborted();
     bound.csrf = m.csrf;
     bound.identity = m;
+    endReason.value = "";
     assetCache(bound.controller.signal, () => {
-      if (bound === life) invalidate(true);
+      if (bound === life) invalidate(true, "expired");
     }, { owner: m.id, verify: () => verify(bound, true) });
     identity.value = m;
   }
@@ -171,7 +176,7 @@ export function useSession() {
     if (authBusy) return "";
     authBusy = true;
     const token = life.csrf;
-    invalidate(true);
+    invalidate(true, "logout");
     pending.value = true;
     try {
       // Revocation outlives the tenant it just destroyed.
@@ -206,8 +211,9 @@ export function useSession() {
     window.removeEventListener("pageshow", foreground);
     document.removeEventListener("visibilitychange", foreground);
   });
+  function clearEndReason() { endReason.value = ""; }
   return {
-    identity, pending, ready, restore, login, setup, logout,
+    identity, pending, ready, endReason, clearEndReason, restore, login, setup, logout,
     // Vue passes this stable, lifetime-bound function to the keyed tenant tree.
     // Never hand an old component a function that reads a future session's token.
     get api() { return bindApi(life); },

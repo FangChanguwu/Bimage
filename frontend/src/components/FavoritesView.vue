@@ -14,7 +14,7 @@ import AssetImage from "./AssetImage.vue";
 import Modal from "./Modal.vue";
 import Lightbox from "./Lightbox.vue";
 import ReferenceImages from "./ReferenceImages.vue";
-import { assetCache, download, copyImage } from "../composables/assetCache";
+import { assetCache, download, copyImage, extensionForMime } from "../composables/assetCache";
 import type { FavoriteItem, GenerationForm, Run } from "../types";
 import { t, formatDate } from "../i18n";
 
@@ -33,23 +33,26 @@ const detailLabels: Record<string, string> = {
 const props = defineProps<{
   favorites: FavoriteItem[];
   loading: boolean;
+  error?: string;
   signal: AbortSignal;
   run: Run;
+  unfavorite: (asset: string) => Promise<boolean>;
 }>();
 
 const emit = defineEmits<{
-  unfavorite: [asset: string];
   useAsReference: [asset: string];
   restore: [form: GenerationForm];
   goStudio: [];
+  retry: [];
 }>();
 
 const selectedId = ref<string | null>(null);
 const previewOpen = ref(false);
 const copiedPrompt = ref(false);
 const detailImageState = ref<"loading" | "ready" | "error">("loading");
+const pendingUnfavoriteAsset = ref<string | null>(null);
+const unfavoriting = ref(false);
 let copyTimer: ReturnType<typeof setTimeout> | undefined;
-
 const selected = computed(() =>
   selectedId.value ? props.favorites.find((item) => item.id === selectedId.value) ?? null : null,
 );
@@ -80,16 +83,19 @@ function openDetail(item: FavoriteItem) {
 }
 
 async function copyPrompt(text: string) {
-  try {
+  const ok = await props.run(async () => {
+    if (!navigator.clipboard?.writeText) {
+      throw Error("当前环境不支持剪贴板写入，请手动复制提示词");
+    }
     await navigator.clipboard.writeText(text);
-    copiedPrompt.value = true;
-    clearTimeout(copyTimer);
-    copyTimer = setTimeout(() => {
-      copiedPrompt.value = false;
-    }, 1800);
-  } catch {
-    /* Clipboard unavailable */
-  }
+    return true;
+  });
+  if (!ok) return;
+  copiedPrompt.value = true;
+  clearTimeout(copyTimer);
+  copyTimer = setTimeout(() => {
+    copiedPrompt.value = false;
+  }, 1800);
 }
 
 function handleUseAsReference(asset: string) {
@@ -103,11 +109,25 @@ function handleRestore(form: GenerationForm) {
   emit("restore", form);
 }
 
-function handleUnfavorite(asset: string) {
-  if (selected.value?.asset === asset) {
-    selectedId.value = null;
+function requestUnfavorite(asset: string) {
+  if (unfavoriting.value) return;
+  pendingUnfavoriteAsset.value = asset;
+}
+
+async function confirmUnfavorite() {
+  const asset = pendingUnfavoriteAsset.value;
+  if (!asset || unfavoriting.value) return;
+  unfavoriting.value = true;
+  try {
+    const ok = await props.unfavorite(asset);
+    if (!ok) return;
+    pendingUnfavoriteAsset.value = null;
+    if (selected.value?.asset === asset) {
+      selectedId.value = null;
+    }
+  } finally {
+    unfavoriting.value = false;
   }
-  emit("unfavorite", asset);
 }
 </script>
 
@@ -115,6 +135,15 @@ function handleUnfavorite(asset: string) {
   <section class="favorites-view" :aria-label="t('收藏夹')">
     <div v-if="loading && !favorites.length" class="favorites-grid favorites-loading" :aria-label="t('加载中…')">
       <div v-for="n in 8" :key="n" class="favorite-skeleton" />
+    </div>
+
+    <div v-else-if="error && !favorites.length" class="empty-history favorites-empty" role="alert">
+      <Star :size="38" :stroke-width="1.3" aria-hidden="true" />
+      <h3>{{ t("收藏夹加载失败") }}</h3>
+      <p>{{ t(error) }}</p>
+      <button type="button" class="primary" @click="emit('retry')">
+        {{ t("重试") }}
+      </button>
     </div>
 
     <div v-else-if="!favorites.length" class="empty-history favorites-empty">
@@ -125,7 +154,6 @@ function handleUnfavorite(asset: string) {
         {{ t("前往图像工作台") }}<ArrowUpRight :size="15" />
       </button>
     </div>
-
     <div v-else class="favorites-grid">
       <button
         v-for="item in favorites"
@@ -190,7 +218,7 @@ function handleUnfavorite(asset: string) {
                 run(() =>
                   download(
                     '/api/assets/' + selected!.asset,
-                    selected!.asset + '.' + (selected!.mime?.split('/')[1] || 'png'),
+                    selected!.mime ? selected!.asset + '.' + extensionForMime(selected!.mime) : selected!.asset,
                     signal,
                   ),
                 )
@@ -220,7 +248,8 @@ function handleUnfavorite(asset: string) {
             <button
               type="button"
               class="favorite-remove-btn"
-              @click="handleUnfavorite(selected.asset)"
+              :disabled="unfavoriting"
+              @click="requestUnfavorite(selected.asset)"
             >
               <Star :size="15" class="star-filled" />{{ t("取消收藏") }}
             </button>
@@ -300,9 +329,24 @@ function handleUnfavorite(asset: string) {
       can-favorite
       can-use-as-reference
       :is-favorite="() => true"
-      @toggle-favorite="handleUnfavorite"
+      @toggle-favorite="requestUnfavorite"
       @use-as-reference="handleUseAsReference"
       @close="previewOpen = false"
     />
+
+    <Modal
+      v-if="pendingUnfavoriteAsset"
+      :title="t('取消收藏')"
+      :locked="unfavoriting"
+      @close="pendingUnfavoriteAsset = null"
+    >
+      <p>{{ t('确定取消收藏该图片？如果原任务已删除且无其他草稿引用，该图片将被永久删除且无法恢复。') }}</p>
+      <footer class="form-footer">
+        <button type="button" autofocus :disabled="unfavoriting" @click="pendingUnfavoriteAsset = null">{{ t('取消') }}</button>
+        <button type="button" class="delete-confirm" :disabled="unfavoriting" @click="confirmUnfavorite">
+          {{ t(unfavoriting ? '处理中…' : '确认取消收藏') }}
+        </button>
+      </footer>
+    </Modal>
   </section>
 </template>

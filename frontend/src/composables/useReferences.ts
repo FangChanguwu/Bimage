@@ -1,20 +1,20 @@
 import { ref, onScopeDispose } from "vue";
 import { MAX_REFERENCES, fileData } from "../domain";
 import type { Api } from "../types";
-export async function uploadReferences(
+export async function uploadReferenceFiles(
   files: File[],
-  ids: string[],
+  existingCount: number,
   api: Api,
   signal: AbortSignal,
-) {
-  if (ids.length + files.length > MAX_REFERENCES)
+): Promise<string[]> {
+  if (existingCount + files.length > MAX_REFERENCES)
     throw Error("参考图最多16张，请减少后重试");
   for (const file of files) {
     if (!["image/png", "image/jpeg", "image/webp"].includes(file.type))
       throw Error("仅支持 PNG、JPEG、WebP");
     if (file.size > 8 * 1024 * 1024) throw Error("每张参考图最多8MB");
   }
-  const out = [...ids];
+  const added: string[] = [];
   for (const file of files) {
     signal.throwIfAborted();
     const data = await fileData(file);
@@ -26,7 +26,20 @@ export async function uploadReferences(
       signal,
     );
     signal.throwIfAborted();
-    if (!out.includes(asset.id)) out.push(asset.id);
+    if (!added.includes(asset.id)) added.push(asset.id);
+  }
+  return added;
+}
+export async function uploadReferences(
+  files: File[],
+  ids: string[],
+  api: Api,
+  signal: AbortSignal,
+) {
+  const added = await uploadReferenceFiles(files, ids.length, api, signal);
+  const out = [...ids];
+  for (const id of added) {
+    if (!out.includes(id) && out.length < MAX_REFERENCES) out.push(id);
   }
   return out;
 }
@@ -54,8 +67,14 @@ export function useReferences(
       .catch(() => {})
       .then(async () => {
         if (!active || captured !== version) return;
-        const ids = await uploadReferences(files, get(), api, signal);
-        if (active && captured === version) set(ids);
+        const added = await uploadReferenceFiles(files, get().length, api, signal);
+        if (!active || captured !== version) return;
+        const current = get();
+        const merged = [...current];
+        for (const id of added) {
+          if (!merged.includes(id) && merged.length < MAX_REFERENCES) merged.push(id);
+        }
+        set(merged);
       })
       .finally(() => {
         if (active) pending.value = false;

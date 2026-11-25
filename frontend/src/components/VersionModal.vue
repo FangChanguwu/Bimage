@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { RefreshCw, Download, ExternalLink, RotateCcw, X, LoaderCircle } from "lucide-vue-next";
 import SelectControl from "./SelectControl.vue";
 import { t, locale } from "../i18n";
+import { renderMarkdown } from "../markdown";
 import type {
   Api,
   ReleaseInfo,
@@ -25,6 +26,7 @@ const emit = defineEmits<{
   close: [];
   update: [snapshot: VersionSnapshot];
   notice: [message: string, type: NoticeType];
+  busy: [busy: boolean];
 }>();
 
 const popoverRef = ref<HTMLDivElement | null>(null);
@@ -39,12 +41,16 @@ const opState = ref<UpdateOperationState | null>(props.snapshot?.operation ?? nu
 const actionError = ref("");
 const actionSuccess = ref("");
 const waitingRestart = ref(false);
+const submitting = ref(false);
+const needsManualRefresh = ref(false);
 
 const busy = computed(() => {
-  if (waitingRestart.value) return true;
+  if (submitting.value || waitingRestart.value) return true;
   const p = opState.value?.phase;
   return Boolean(p && !["idle", "done", "failed"].includes(p));
 });
+
+watch(busy, (val) => emit("busy", val), { immediate: true });
 
 let closeTimer: ReturnType<typeof setTimeout> | undefined;
 let pollTimer: ReturnType<typeof setTimeout> | undefined;
@@ -58,16 +64,44 @@ const releasesUrl = computed(
 const viewReleaseUrl = computed(() => data.value?.latest?.url || releasesUrl.value);
 const releases = computed<ReleaseInfo[]>(() => data.value?.releases ?? []);
 const capabilities = computed(() => data.value?.capabilities ?? null);
+const releaseNotesHtml = computed(() => renderMarkdown(data.value?.latest?.body ?? ""));
+
+function parseSemver(raw: string): { nums: number[]; pre: string } | null {
+  const cleaned = raw.trim().replace(/^v/i, "");
+  if (!cleaned) return null;
+  const [core, ...preParts] = cleaned.split("-");
+  const nums = core.split(".").map((part) => Number(part));
+  if (!nums.length || nums.some((n) => !Number.isFinite(n) || n < 0)) return null;
+  while (nums.length < 3) nums.push(0);
+  return { nums, pre: preParts.join("-") };
+}
+
+function compareVersions(a: string, b: string): number {
+  const pa = parseSemver(a);
+  const pb = parseSemver(b);
+  if (!pa || !pb) return a.localeCompare(b);
+  const len = Math.max(pa.nums.length, pb.nums.length);
+  for (let i = 0; i < len; i++) {
+    const diff = (pa.nums[i] ?? 0) - (pb.nums[i] ?? 0);
+    if (diff !== 0) return diff;
+  }
+  if (!pa.pre && pb.pre) return 1;
+  if (pa.pre && !pb.pre) return -1;
+  return pa.pre.localeCompare(pb.pre);
+}
+
+function normalizeVer(raw: string): string {
+  return raw.trim().replace(/^v/i, "");
+}
+
+const rollbackReleases = computed<ReleaseInfo[]>(() =>
+  releases.value.filter((rel) => compareVersions(rel.version, currentVersion.value) < 0),
+);
 
 const rollbackOptions = computed(() =>
-  releases.value.map((rel) => {
+  rollbackReleases.value.map((rel) => {
     const date = rel.publishedAt ? formatDate(rel.publishedAt) : "";
-    const isCurrent = rel.version === currentVersion.value;
-    const tagHint = isCurrent
-      ? t("当前版本")
-      : rel.cached
-        ? t("本地缓存")
-        : "";
+    const tagHint = rel.cached ? t("本地缓存") : "";
     const secondary = [date, tagHint].filter(Boolean).join(" · ");
     return {
       value: rel.tag,
@@ -78,7 +112,7 @@ const rollbackOptions = computed(() =>
 );
 
 const selectedRelease = computed(
-  () => releases.value.find((rel) => rel.tag === targetTag.value) ?? null,
+  () => rollbackReleases.value.find((rel) => rel.tag === targetTag.value) ?? null,
 );
 
 const canInstallLatest = computed(() => {
@@ -134,11 +168,10 @@ function formatDateTime(iso: string): string {
 
 function syncDefaultTarget(list: ReleaseInfo[]) {
   if (targetTag.value && list.some((r) => r.tag === targetTag.value)) return;
-  const older = list.find((r) => r.version !== currentVersion.value);
-  targetTag.value = older?.tag || list[0]?.tag || "";
+  targetTag.value = list[0]?.tag || "";
 }
 
-watch(releases, syncDefaultTarget, { immediate: true });
+watch(rollbackReleases, syncDefaultTarget, { immediate: true });
 watch(
   () => props.snapshot,
   (next) => {
@@ -186,18 +219,26 @@ function togglePanel(panel: "update" | "rollback") {
   if (busy.value) return;
   actionError.value = "";
   actionSuccess.value = "";
+  needsManualRefresh.value = false;
   activePanel.value = activePanel.value === panel ? "none" : panel;
   if (activePanel.value !== "none" && !releases.value.length && !checking.value) {
     void checkUpdates(false);
   }
 }
 
+function reloadPage() {
+  window.location.reload();
+}
+
 async function waitForServiceRecovery(expectedVersion: string, previousVersion: string) {
   waitingRestart.value = true;
+  needsManualRefresh.value = false;
+  const target = normalizeVer(expectedVersion);
+  const prev = normalizeVer(previousVersion);
   opState.value = {
     id: opState.value?.id || "restart",
     action: opState.value?.action || "update",
-    targetTag: opState.value?.targetTag || `v${expectedVersion}`,
+    targetTag: opState.value?.targetTag || (target ? `v${target}` : ""),
     phase: "restarting",
     progress: 97,
     message: t("等待新版本服务启动…"),
@@ -220,17 +261,16 @@ async function waitForServiceRecovery(expectedVersion: string, previousVersion: 
       }
       const body = (await res.json()) as { ok?: boolean; version?: string };
       if (!body.ok) continue;
-      const reported = body.version || "";
-      const versionChanged =
-        (expectedVersion && reported === expectedVersion) ||
-        (reported && reported !== previousVersion);
-      if (versionChanged || (sawDisconnect && reported)) {
-        const finalVer = reported || expectedVersion || currentVersion.value;
+      const reported = normalizeVer(body.version || "");
+      if (!reported) continue;
+      const matchedTarget = target ? reported === target : reported !== prev;
+      if (matchedTarget) {
+        waitingRestart.value = false;
         opState.value = {
           ...opState.value!,
           phase: "done",
           progress: 100,
-          message: t("已切换至 v{version}，正在刷新页面…", { version: finalVer }),
+          message: t("已切换至 v{version}，正在刷新页面…", { version: reported }),
         };
         actionSuccess.value = opState.value.message;
         emit("notice", opState.value.message, "success");
@@ -240,6 +280,26 @@ async function waitForServiceRecovery(expectedVersion: string, previousVersion: 
         if (!unmounted) window.location.reload();
         return;
       }
+      if (sawDisconnect) {
+        waitingRestart.value = false;
+        needsManualRefresh.value = true;
+        const msg =
+          reported === prev
+            ? t("服务已重启，但仍运行在旧版本 v{version}，请检查日志或重试。", { version: reported })
+            : t("服务已恢复为 v{actual}，与目标版本 v{expected} 不一致，请刷新页面确认。", {
+                actual: reported,
+                expected: target || prev,
+              });
+        opState.value = {
+          ...opState.value!,
+          phase: "failed",
+          message: msg,
+          error: msg,
+        };
+        actionError.value = msg;
+        emit("notice", msg, "error");
+        return;
+      }
     } catch {
       sawDisconnect = true;
     }
@@ -247,7 +307,12 @@ async function waitForServiceRecovery(expectedVersion: string, previousVersion: 
 
   waitingRestart.value = false;
   if (!unmounted) {
-    actionError.value = t("等待服务重启超时，请手动刷新页面确认当前版本。");
+    needsManualRefresh.value = true;
+    const msg = t("等待服务重启超时，请手动刷新页面确认当前版本。");
+    opState.value = opState.value
+      ? { ...opState.value, phase: "failed", message: msg, error: msg }
+      : null;
+    actionError.value = msg;
   }
 }
 
@@ -293,8 +358,10 @@ async function pollOperationUntilRestart(expectedVersion: string, previousVersio
 
 async function executeUpdate() {
   if (busy.value || !data.value?.hasUpdate || !data.value.latest) return;
+  submitting.value = true;
   actionError.value = "";
   actionSuccess.value = "";
+  needsManualRefresh.value = false;
   const previousVersion = currentVersion.value;
   const expectedVersion = data.value.latest.version;
   try {
@@ -305,16 +372,21 @@ async function executeUpdate() {
       props.signal,
     );
     opState.value = result.operation;
+    submitting.value = false;
     await pollOperationUntilRestart(expectedVersion, previousVersion);
   } catch (error) {
     actionError.value = error instanceof Error ? error.message : t("更新版本失败");
+  } finally {
+    submitting.value = false;
   }
 }
 
 async function executeRollback(explicitTag?: string) {
   if (busy.value) return;
+  submitting.value = true;
   actionError.value = "";
   actionSuccess.value = "";
+  needsManualRefresh.value = false;
   const previousVersion = currentVersion.value;
   const tagToUse = explicitTag === undefined ? targetTag.value : explicitTag;
   const expectedVersion = tagToUse
@@ -328,9 +400,12 @@ async function executeRollback(explicitTag?: string) {
       props.signal,
     );
     opState.value = result.operation;
+    submitting.value = false;
     await pollOperationUntilRestart(expectedVersion, previousVersion);
   } catch (error) {
     actionError.value = error instanceof Error ? error.message : t("回退版本失败");
+  } finally {
+    submitting.value = false;
   }
 }
 
@@ -362,7 +437,10 @@ function close() {
   if (closing.value || busy.value) return;
   closing.value = true;
   const delay = matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 110;
-  closeTimer = setTimeout(() => emit("close"), delay);
+  closeTimer = setTimeout(() => {
+    emit("close");
+    props.anchor?.focus();
+  }, delay);
 }
 
 function onPointerDownOutside(e: Event) {
@@ -393,6 +471,7 @@ watch(() => props.anchor, place);
 
 onBeforeUnmount(() => {
   unmounted = true;
+  emit("busy", false);
   clearTimeout(closeTimer);
   clearTimeout(pollTimer);
   document.removeEventListener("pointerdown", onPointerDownOutside, true);
@@ -403,6 +482,7 @@ onBeforeUnmount(() => {
 
 onMounted(async () => {
   place();
+  void nextTick(() => popoverRef.value?.focus({ preventScroll: true }));
   document.addEventListener("pointerdown", onPointerDownOutside, true);
   document.addEventListener("keydown", onKeyDown);
   window.addEventListener("resize", place);
@@ -435,6 +515,7 @@ onMounted(async () => {
     <div
       ref="popoverRef"
       role="dialog"
+      tabindex="-1"
       :aria-label="t('版本信息')"
       class="version-popover"
       :class="{ closing }"
@@ -451,11 +532,8 @@ onMounted(async () => {
                 {{ statusText }}
               </span>
             </div>
-            <p class="version-meta">
-              GitHub · {{ repoName }}
-              <template v-if="data?.checkedAt">
-                · {{ t("上次检测 {time}", { time: formatDateTime(data.checkedAt) }) }}
-              </template>
+            <p v-if="data?.checkedAt" class="version-meta">
+              {{ t("上次检测 {time}", { time: formatDateTime(data.checkedAt) }) }}
             </p>
           </div>
           <button
@@ -509,6 +587,14 @@ onMounted(async () => {
         </div>
 
         <p v-if="checkError" class="error-message version-feedback" role="alert">{{ checkError }}</p>
+        <div v-if="actionError" class="version-feedback-box">
+          <p class="error-message version-feedback" role="alert">{{ actionError }}</p>
+          <div v-if="needsManualRefresh" class="version-recovery-actions">
+            <button type="button" :disabled="checking || busy" @click="checkUpdates(true)">{{ t("重新检测状态") }}</button>
+            <button type="button" class="primary" @click="reloadPage">{{ t("刷新页面") }}</button>
+          </div>
+        </div>
+        <p v-else-if="actionSuccess" class="version-success version-feedback" role="status">{{ actionSuccess }}</p>
 
         <div v-if="busy && opState" class="version-progress" role="status" aria-live="polite">
           <div class="version-progress-head">
@@ -519,7 +605,6 @@ onMounted(async () => {
             <div class="version-progress-bar" :style="{ width: `${Math.min(100, Math.max(4, opState.progress))}%` }" />
           </div>
         </div>
-
         <section v-if="activePanel === 'update'" class="version-panel version-update" :aria-label="t('更新版本')">
           <div class="version-panel-head">
             <h3>
@@ -538,9 +623,7 @@ onMounted(async () => {
             </a>
           </div>
 
-          <p v-if="actionError" class="error-message version-feedback" role="alert">{{ actionError }}</p>
-          <p v-else-if="actionSuccess" class="version-success version-feedback" role="status">{{ actionSuccess }}</p>
-          <p v-else-if="data?.checkedAt && !data?.hasUpdate" class="muted version-hint">
+          <p v-if="data?.checkedAt && !data?.hasUpdate" class="muted version-hint">
             {{ t("当前已是最新版本，无需更新。") }}
           </p>
           <p v-else-if="data?.hasUpdate && !canInstallLatest && data?.git.dirty" class="muted version-hint">
@@ -612,9 +695,7 @@ onMounted(async () => {
               />
             </label>
 
-            <p v-if="actionError" class="error-message version-feedback" role="alert">{{ actionError }}</p>
-            <p v-else-if="actionSuccess" class="version-success version-feedback" role="status">{{ actionSuccess }}</p>
-            <p v-else-if="selectedRelease && selectedRelease.version !== currentVersion && !canInstallSelected && data?.git.dirty" class="muted version-hint">
+            <p v-if="selectedRelease && selectedRelease.version !== currentVersion && !canInstallSelected && data?.git.dirty" class="muted version-hint">
               {{ t("检测到工作区有未提交修改；执行回退前请先提交或暂存本地改动。") }}
             </p>
             <p v-else-if="selectedRelease && selectedRelease.version !== currentVersion && !canInstallSelected" class="muted version-hint">
@@ -655,7 +736,7 @@ onMounted(async () => {
               <ExternalLink :size="12" aria-hidden="true" />
             </a>
           </div>
-          <div v-if="data.latest.body" class="version-notes-body">{{ data.latest.body }}</div>
+          <div v-if="releaseNotesHtml" class="version-notes-body" v-html="releaseNotesHtml" />
         </section>
       </div>
     </div>

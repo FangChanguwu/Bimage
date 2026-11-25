@@ -3,7 +3,7 @@ import { computed, ref, watch, onMounted, onBeforeUnmount } from "vue";
 import { ZoomIn, ZoomOut, RotateCcw, Download, Copy, ChevronLeft, ChevronRight, LoaderCircle, Star, ImagePlus } from "lucide-vue-next";
 import Modal from "./Modal.vue";
 import AssetImage from "./AssetImage.vue";
-import { assetCache, download, copyImage } from "../composables/assetCache";
+import { assetCache, download, copyImage, extensionForMime } from "../composables/assetCache";
 import type { Run, Point } from "../types";
 import { t } from "../i18n";
 interface LightboxItem { asset: string; mime?: string }
@@ -24,9 +24,10 @@ const emit = defineEmits<{
   useAsReference: [asset: string];
 }>();
 const gallery = computed<LightboxItem[]>(() =>
-  props.items?.length ? props.items : [{ asset: props.asset, mime: props.mime }],
+  props.items ? props.items : [{ asset: props.asset, mime: props.mime }],
 );
-const index = ref(Math.max(0, Math.min(props.initialIndex ?? 0, (props.items?.length ?? 1) - 1)));
+const index = ref(Math.max(0, Math.min(props.initialIndex ?? 0, Math.max(0, (props.items?.length ?? 1) - 1))));
+const activeAsset = ref(gallery.value[index.value]?.asset ?? props.asset);
 const current = computed(() => gallery.value[index.value] ?? { asset: props.asset, mime: props.mime });
 const previewThumb = computed(() => assetCache(props.signal).peek(current.value.asset, "thumbnail"));
 const imageState = ref<"loading" | "ready" | "error">("loading");
@@ -48,8 +49,27 @@ function reset() {
 function step(delta: number) {
   if (gallery.value.length <= 1) return;
   index.value = (index.value + delta + gallery.value.length) % gallery.value.length;
+  activeAsset.value = gallery.value[index.value]?.asset ?? activeAsset.value;
 }
-watch(() => current.value.asset, () => {
+watch(
+  gallery,
+  (next) => {
+    if (props.items && next.length === 0) {
+      emit("close");
+      return;
+    }
+    const found = next.findIndex((item) => item.asset === activeAsset.value);
+    if (found >= 0) {
+      index.value = found;
+    } else {
+      index.value = Math.max(0, Math.min(index.value, next.length - 1));
+      activeAsset.value = next[index.value]?.asset ?? props.asset;
+    }
+  },
+  { deep: true },
+);
+watch(() => current.value.asset, (nextAsset) => {
+  activeAsset.value = nextAsset;
   reset();
   imageState.value = "loading";
 });
@@ -124,7 +144,7 @@ function up(e: PointerEvent) {
           run(() =>
             download(
               '/api/assets/' + current.asset,
-              current.asset + '.' + (current.mime?.split('/')[1] || 'png'),
+              current.mime ? current.asset + '.' + extensionForMime(current.mime) : current.asset,
               signal,
             ),
           )
